@@ -1,0 +1,41 @@
+//
+//  APIKeys.swift.template
+//  QRLottery
+//
+//  Template file for API keys configuration.
+//  Copy this file to APIKeys.swift and replace the placeholder values with your actual API keys.
+//
+//  IMPORTANT: Never commit APIKeys.swift to version control!
+//  This template file is safe to commit, but the actual APIKeys.swift file should be in .gitignore
+//
+
+import Foundation
+
+struct APIKeys {
+    // OpenAI API Key for Vision API
+    // Get your key from: https://platform.openai.com/api-keys
+    static let openAIAPIKey = "YOUR_OPENAI_API_KEY_HERE"
+    
+    // Magayo.com API Key for lottery results
+    // Get your key from: https://www.magayo.com/api/
+    static let magayoAPIKey = "YOUR_MAGAYO_API_KEY_HERE"
+    
+    // OpenAI API Base URL
+    static let openAIBaseURL = "https://api.openai.com/v1/chat/completions"
+}
+
+// MARK: - Validation
+extension APIKeys {
+    /// Validates that API keys are properly configured
+    static var isConfigured: Bool {
+        return !openAIAPIKey.contains("YOUR_") && !magayoAPIKey.contains("YOUR_")
+    }
+    
+    /// Returns a user-friendly error message if keys are not configured
+    static var configurationError: String? {
+        guard isConfigured else {
+            return "API keys not configured. Please copy APIKeys.swift.template to APIKeys.swift and add your actual API keys."
+        }
+        return nil
+    }
+}

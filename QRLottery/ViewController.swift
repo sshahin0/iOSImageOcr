@@ -41,8 +41,8 @@ final class TicketNumberOCR {
     
     // MARK: - OpenAI Integration
     
-    private let openAIAPIKey = "" // Replace with your OpenAI API key
-    private let openAIBaseURL = "https://api.openai.com/v1/chat/completions"
+    private let openAIAPIKey = APIKeys.openAIAPIKey
+    private let openAIBaseURL = APIKeys.openAIBaseURL
     
     func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
@@ -849,15 +849,15 @@ final class TicketNumberOCR {
                     let specials = tokens.count > 5 ? tokens.last : nil
                     let normals = Array(tokens.prefix(5))
                     
-                    let saneNormals = normals.map { num in
+                let saneNormals = normals.map { num in
                         (1...70).contains(num) ? num : 0
-                    }
-                    let saneSpecial = specials.flatMap { num in
+                }
+                let saneSpecial = specials.flatMap { num in
                         (1...99).contains(num) ? num : 0
-                    }
-                    
+                }
+                
                     print("OCR Debug - Parsed full row: \(saneNormals) PB: \(saneSpecial ?? 0)")
-                    return TicketRow(numbers: saneNormals, special: saneSpecial)
+                return TicketRow(numbers: saneNormals, special: saneSpecial)
                 } else {
                     // Partial row - pad with zeros
                     let paddedNumbers = Array(tokens.prefix(5)) + Array(repeating: 0, count: max(0, 5 - tokens.count))
@@ -2127,32 +2127,43 @@ class QRScannerViewController: UIViewController {
             DispatchQueue.main.async {
                 self.showNoDataFoundAlert()
             }
-            return
-        }
+                        return
+                    }
         
         let image = UIImage(cgImage: cgImage)
         let ocr = TicketNumberOCR()
         
+        // Show progress dialog during OpenAI request
+        let progressAlert = UIAlertController(title: "Scanning Lottery Ticket", message: "Analyzing ticket with AI...", preferredStyle: .alert)
+        present(progressAlert, animated: true)
+        
         // OpenAI-only scanning path (local OCR disabled)
         ocr.scanWithOpenAI(image: image) { result in
             DispatchQueue.main.async {
+                progressAlert.dismiss(animated: true) {
                 switch result {
                 case .success(let rows):
-                    print("OpenAI OCR Success - Found \(rows.count) rows:")
+                        print("OpenAI OCR Success - Found \(rows.count) rows:")
                     for (index, row) in rows.enumerated() {
-                        let regularStr = row.numbers.map { $0 == 0 ? "empty" : String($0) }.joined(separator: ", ")
-                        let powerballStr = (row.special ?? 0) == 0 ? "empty" : String(row.special!)
+                            let regularStr = row.numbers.map { $0 == -1 ? "ISSUE" : String($0) }.joined(separator: ", ")
+                            let powerballStr = (row.special ?? -1) == -1 ? "ISSUE" : String(row.special!)
                         print("  Row \(index): [\(regularStr)] PB: \(powerballStr)")
                     }
+                        
+                        // Count issues (-1 values)
+                        let issueCount = self.countIssues(in: rows)
+                        if issueCount > 0 {
+                            self.showIssuesToast(count: issueCount)
+                        }
                     
                     // Convert to lottery data format
                     let lotteryData = self.convertTicketRowsToLotteryData(rows)
-                    print("OpenAI OCR Processing - Generated lottery data: '\(lotteryData)'")
+                        print("OpenAI OCR Processing - Generated lottery data: '\(lotteryData)'")
                     
                     if !lotteryData.isEmpty {
                         AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
                         self.captureSession.stopRunning()
-                        print("OpenAI OCR Processing - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
+                            print("OpenAI OCR Processing - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
                         self.delegate?.didScanQRCode(lotteryData, image: self.capturedImage)
                     } else {
                         print("No valid lottery data found")
@@ -2160,8 +2171,9 @@ class QRScannerViewController: UIViewController {
                     }
                     
                 case .failure(let error):
-                    print("OpenAI OCR Error: \(error.localizedDescription)")
+                        print("OpenAI OCR Error: \(error.localizedDescription)")
                     self.showNoDataFoundAlert()
+                    }
                 }
             }
         }
@@ -2236,6 +2248,75 @@ class QRScannerViewController: UIViewController {
         let alert = UIAlertController(title: "No Data Found", message: "No QR code, barcode, or lottery numbers were detected in the captured image. Please try again.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+    
+    private func countIssues(in rows: [TicketRow]) -> Int {
+        var issueCount = 0
+        
+        for row in rows {
+            // Count -1 values in regular numbers
+            issueCount += row.numbers.filter { $0 == -1 }.count
+            
+            // Count -1 values in special numbers
+            if let special = row.special, special == -1 {
+                issueCount += 1
+            }
+        }
+        
+        return issueCount
+    }
+    
+    private func showIssuesToast(count: Int) {
+        let message = "\(count) issues found"
+        DispatchQueue.main.async {
+            // Remove existing toast if any
+            let toastTag = 987654
+            self.view.viewWithTag(toastTag)?.removeFromSuperview()
+            
+            // Container view with red background
+            let toastView = UIView()
+            toastView.tag = toastTag
+            toastView.backgroundColor = UIColor.systemRed
+            toastView.alpha = 0.0
+            toastView.layer.cornerRadius = 10
+            toastView.layer.masksToBounds = true
+            toastView.translatesAutoresizingMaskIntoConstraints = false
+            
+            // Label
+            let label = UILabel()
+            label.text = message
+            label.textColor = .white
+            label.font = UIFont.boldSystemFont(ofSize: 15)
+            label.numberOfLines = 0
+            label.textAlignment = .center
+            label.translatesAutoresizingMaskIntoConstraints = false
+            toastView.addSubview(label)
+            
+            self.view.addSubview(toastView)
+            
+            // Layout: show near the top of the Lottery scan result area
+            NSLayoutConstraint.activate([
+                toastView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor, constant: 20),
+                toastView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -20),
+                toastView.topAnchor.constraint(equalTo: self.view.safeAreaLayoutGuide.topAnchor, constant: 12),
+                
+                label.leadingAnchor.constraint(equalTo: toastView.leadingAnchor, constant: 16),
+                label.trailingAnchor.constraint(equalTo: toastView.trailingAnchor, constant: -16),
+                label.topAnchor.constraint(equalTo: toastView.topAnchor, constant: 12),
+                label.bottomAnchor.constraint(equalTo: toastView.bottomAnchor, constant: -12)
+            ])
+            
+            // Animate in/out
+            UIView.animate(withDuration: 0.25, animations: {
+                toastView.alpha = 0.95
+            }) { _ in
+                UIView.animate(withDuration: 0.25, delay: 2.5, options: [.curveEaseInOut], animations: {
+                    toastView.alpha = 0.0
+                }, completion: { _ in
+                    toastView.removeFromSuperview()
+                })
+            }
+        }
     }
     
     private func setupPreviewContainer() {
@@ -2539,6 +2620,7 @@ class QRScanResultViewController: UIViewController {
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.backgroundColor = .systemBackground
+        scrollView.keyboardDismissMode = .onDrag
         return scrollView
     }()
     
@@ -2643,6 +2725,18 @@ class QRScanResultViewController: UIViewController {
     var powerballNumbers: [Int] = []
     var scannedImage: UIImage?
     
+    // Editing state
+    private var currentEditingButton: UIButton?
+    private var currentEditingTextField: UITextField?
+    
+    // Keyboard handling
+    private var keyboardHeight: CGFloat = 0
+    private var originalScrollViewInsets: UIEdgeInsets = .zero
+    
+    // Persistent toast
+    private var issuesToastView: UIView?
+    private let toastTag = 987654
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
@@ -2651,6 +2745,10 @@ class QRScanResultViewController: UIViewController {
         
         closeButton.addTarget(self, action: #selector(closeButtonTapped), for: .touchUpInside)
         actionButton.addTarget(self, action: #selector(actionButtonTapped), for: .touchUpInside)
+        
+        // Add keyboard observers
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow), name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillHide), name: UIResponder.keyboardWillHideNotification, object: nil)
         
         // Add long press gesture to make numbers editable
         let longPressGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
@@ -2762,6 +2860,12 @@ class QRScanResultViewController: UIViewController {
             // Parse lottery numbers
             parseLotteryNumbers()
             setupNumbersGrid()
+            
+            // Show persistent toast if there are issues
+            let issueCount = countCurrentIssues()
+            if issueCount > 0 {
+                showPersistentIssuesToast(count: issueCount)
+            }
         } else {
             titleLabel.text = "QR Code Scanned"
             titleLabel.textColor = .systemBlue
@@ -2913,23 +3017,28 @@ class QRScanResultViewController: UIViewController {
     private func createNumberButton(number: Int) -> UIButton {
         let button = UIButton(type: .system)
         
-        if number == 0 {
-            // Empty circle
+        if number == -1 || number == 0 {
+            // Empty circle - red border for any empty field
             button.setTitle("", for: .normal)
             button.backgroundColor = .systemGray6
             button.setTitleColor(.clear, for: .normal)
+            button.layer.borderColor = UIColor.systemRed.cgColor
+            button.layer.borderWidth = 2
         } else {
             // Number circle
         button.setTitle(String(number), for: .normal)
         button.backgroundColor = .white
         button.setTitleColor(.label, for: .normal)
+            button.layer.borderColor = UIColor.systemGray4.cgColor
+            button.layer.borderWidth = 1
         }
         
         button.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
         button.layer.cornerRadius = 20
-        button.layer.borderWidth = 1
-        button.layer.borderColor = UIColor.systemGray4.cgColor
         button.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Add tap gesture for editing
+        button.addTarget(self, action: #selector(numberButtonTapped(_:)), for: .touchUpInside)
         
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: 40),
@@ -2942,23 +3051,29 @@ class QRScanResultViewController: UIViewController {
     private func createPowerballButton(number: Int) -> UIButton {
         let button = UIButton(type: .system)
         
-        if number == 0 {
-            // Empty circle
+        if number == -1 || number == 0 {
+            // Empty circle - red border for any empty field
             button.setTitle("", for: .normal)
             button.backgroundColor = .systemGray6
             button.setTitleColor(.clear, for: .normal)
+            button.layer.borderColor = UIColor.systemRed.cgColor
+            button.layer.borderWidth = 2
         } else {
             // Number circle
             button.setTitle(String(number), for: .normal)
             button.backgroundColor = .white
             button.setTitleColor(.label, for: .normal)
+            button.layer.borderColor = UIColor.systemGray4.cgColor
+            button.layer.borderWidth = 1
         }
         
         button.titleLabel?.font = UIFont.boldSystemFont(ofSize: 16)
         button.layer.cornerRadius = 20
-        button.layer.borderWidth = 1
-        button.layer.borderColor = UIColor.systemGray4.cgColor
         button.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Add tap gesture for editing
+        button.addTarget(self, action: #selector(powerballButtonTapped(_:)), for: .touchUpInside)
+        button.accessibilityIdentifier = "powerball"
         
         NSLayoutConstraint.activate([
             button.widthAnchor.constraint(equalToConstant: 40),
@@ -3018,7 +3133,7 @@ class QRScanResultViewController: UIViewController {
     // MARK: - Configuration
     
     // magayo.com API key for lottery results
-    private let apiKey = "WHQCbHNed8W8xTG7JE"
+    private let apiKey = APIKeys.magayoAPIKey
     
     // MARK: - Network Service
     
@@ -3140,7 +3255,7 @@ class QRScanResultViewController: UIViewController {
         // Call the lottery results API
         fetchLotteryResults { [weak self] result in
             DispatchQueue.main.async {
-                alert.dismiss(animated: true) {
+            alert.dismiss(animated: true) {
                     switch result {
                     case .success(let lotteryResult):
                         self?.showWinningResults(with: lotteryResult)
@@ -3240,48 +3355,325 @@ class QRScanResultViewController: UIViewController {
     }
     
     @objc private func numberButtonTapped(_ sender: UIButton) {
-        // Determine if this is a Powerball number (last button in each row)
-        var isPowerball = false
-        var maxValue = 69
+        startEditingButton(sender, isPowerball: false)
+    }
+    
+    @objc private func powerballButtonTapped(_ sender: UIButton) {
+        startEditingButton(sender, isPowerball: true)
+    }
+    
+    private func startEditingButton(_ button: UIButton, isPowerball: Bool) {
+        // End any current editing
+        endEditing()
         
-        // Check if this button is the last one in its row (Powerball)
-        if let stackView = sender.superview as? UIStackView,
-           let lastButton = stackView.arrangedSubviews.last as? UIButton,
-           lastButton == sender {
-            isPowerball = true
-            maxValue = 26
-        }
+        // Set current editing button
+        currentEditingButton = button
         
-        let message = isPowerball ? "Enter new Powerball number (1-26)" : "Enter new number (1-69)"
-        let alert = UIAlertController(title: "Edit Number", message: message, preferredStyle: .alert)
-        
-        alert.addTextField { textField in
-            textField.placeholder = "Number"
+        // Create text field overlay
+        let textField = UITextField()
+        textField.text = button.title(for: .normal) ?? ""
+        textField.textAlignment = .center
+        textField.font = UIFont.boldSystemFont(ofSize: 16)
             textField.keyboardType = .numberPad
-            textField.text = sender.title(for: .normal)
-        }
+        textField.backgroundColor = .clear
+        textField.textColor = .label
+        textField.borderStyle = .none
+        textField.delegate = self
+        textField.translatesAutoresizingMaskIntoConstraints = false
         
-        let saveAction = UIAlertAction(title: "Save", style: .default) { _ in
-            if let textField = alert.textFields?.first,
-               let text = textField.text,
-               let number = Int(text),
-               number >= 1 && number <= maxValue {
-                sender.setTitle(String(number), for: .normal)
+        // Add text field to button
+        button.addSubview(textField)
+        currentEditingTextField = textField
+        
+        // Layout text field
+        NSLayoutConstraint.activate([
+            textField.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            textField.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            textField.widthAnchor.constraint(equalTo: button.widthAnchor, constant: -8),
+            textField.heightAnchor.constraint(equalTo: button.heightAnchor, constant: -8)
+        ])
+        
+        // Visual feedback for editing mode
+        button.layer.borderColor = UIColor.systemBlue.cgColor
+        button.layer.borderWidth = 2
+        
+        // Show keyboard
+        textField.becomeFirstResponder()
+        
+        // Add tap gesture to dismiss editing when tapping elsewhere
+        let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissEditing))
+        view.addGestureRecognizer(tapGesture)
+    }
+    
+    @objc private func dismissEditing() {
+        endEditing()
+    }
+    
+    private func endEditing() {
+        // Remove tap gesture
+        view.gestureRecognizers?.forEach { gesture in
+            if gesture is UITapGestureRecognizer {
+                view.removeGestureRecognizer(gesture)
             }
         }
         
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        // End text field editing
+        currentEditingTextField?.resignFirstResponder()
+        currentEditingTextField?.removeFromSuperview()
+        currentEditingTextField = nil
         
-        alert.addAction(saveAction)
-        alert.addAction(cancelAction)
+        // Reset button appearance
+        if let button = currentEditingButton {
+            updateButtonAppearance(button)
+        }
         
-        present(alert, animated: true)
+        currentEditingButton = nil
+    }
+    
+    private func updateButtonAppearance(_ button: UIButton) {
+        let title = button.title(for: .normal) ?? ""
+        let number = Int(title) ?? 0
+        
+        if number == -1 || number == 0 {
+            button.layer.borderColor = UIColor.systemRed.cgColor
+            button.layer.borderWidth = 2
+        } else {
+            button.layer.borderColor = UIColor.systemGray4.cgColor
+            button.layer.borderWidth = 1
+        }
     }
     
     private func showCopyConfirmation() {
         let alert = UIAlertController(title: "Copied!", message: "QR code data has been copied to clipboard.", preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    // MARK: - Keyboard Handling
+    @objc private func keyboardWillShow(_ notification: Notification) {
+        guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let animationDuration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double else { return }
+        
+        keyboardHeight = keyboardFrame.height
+        
+        // Store original insets if not already stored
+        if originalScrollViewInsets == .zero {
+            originalScrollViewInsets = scrollView.contentInset
+        }
+        
+        // Adjust scroll view insets
+        let newInsets = UIEdgeInsets(top: originalScrollViewInsets.top, 
+                                   left: originalScrollViewInsets.left, 
+                                   bottom: keyboardHeight, 
+                                   right: originalScrollViewInsets.right)
+        
+        UIView.animate(withDuration: animationDuration) {
+            self.scrollView.contentInset = newInsets
+            self.scrollView.scrollIndicatorInsets = newInsets
+        }
+        
+        // Scroll to the editing text field
+        if let textField = currentEditingTextField {
+            scrollToTextField(textField)
+        }
+    }
+    
+    @objc private func keyboardWillHide(_ notification: Notification) {
+        guard let animationDuration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double else { return }
+        
+        keyboardHeight = 0
+        
+        UIView.animate(withDuration: animationDuration) {
+            self.scrollView.contentInset = self.originalScrollViewInsets
+            self.scrollView.scrollIndicatorInsets = self.originalScrollViewInsets
+        }
+    }
+    
+    private func scrollToTextField(_ textField: UITextField) {
+        let textFieldFrame = textField.convert(textField.bounds, to: scrollView)
+        let visibleFrame = CGRect(x: 0, y: scrollView.contentOffset.y, 
+                                width: scrollView.bounds.width, 
+                                height: scrollView.bounds.height - keyboardHeight)
+        
+        if !visibleFrame.contains(textFieldFrame) {
+            let targetY = textFieldFrame.midY - visibleFrame.height / 2
+            let maxY = max(0, scrollView.contentSize.height - visibleFrame.height)
+            let clampedY = min(maxY, max(0, targetY))
+            
+            scrollView.setContentOffset(CGPoint(x: 0, y: clampedY), animated: true)
+        }
+    }
+    
+    // MARK: - Persistent Toast Management
+    func showPersistentIssuesToast(count: Int) {
+        let message = "\(count) issues found"
+        
+        // Remove existing toast if any
+        issuesToastView?.removeFromSuperview()
+        
+        // Container view with red background
+        let toastView = UIView()
+        toastView.tag = toastTag
+        toastView.backgroundColor = UIColor.systemRed
+        toastView.alpha = 0.0
+        toastView.layer.cornerRadius = 10
+        toastView.layer.masksToBounds = true
+        toastView.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Label
+        let label = UILabel()
+        label.text = message
+        label.textColor = .white
+        label.font = UIFont.boldSystemFont(ofSize: 15)
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        toastView.addSubview(label)
+        
+        view.addSubview(toastView)
+        issuesToastView = toastView
+        
+        // Layout: show near the top of the Lottery scan result area
+        NSLayoutConstraint.activate([
+            toastView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            toastView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            toastView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            
+            label.leadingAnchor.constraint(equalTo: toastView.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: toastView.trailingAnchor, constant: -16),
+            label.topAnchor.constraint(equalTo: toastView.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: toastView.bottomAnchor, constant: -12)
+        ])
+        
+        // Animate in
+        UIView.animate(withDuration: 0.25) {
+            toastView.alpha = 0.95
+        }
+    }
+    
+    func updateIssuesToast(count: Int) {
+        if count > 0 {
+            showPersistentIssuesToast(count: count)
+        } else {
+            hideIssuesToast()
+        }
+    }
+    
+    func hideIssuesToast() {
+        UIView.animate(withDuration: 0.25, animations: {
+            self.issuesToastView?.alpha = 0.0
+        }) { _ in
+            self.issuesToastView?.removeFromSuperview()
+            self.issuesToastView = nil
+        }
+    }
+    
+    private func countCurrentIssues() -> Int {
+        var issueCount = 0
+        
+        // Count issues in lottery numbers (both -1 and 0 are considered empty)
+        for row in lotteryNumbers {
+            for number in row {
+                if number == -1 || number == 0 {
+                    issueCount += 1
+                }
+            }
+        }
+        
+        // Count issues in powerball numbers (both -1 and 0 are considered empty)
+        for number in powerballNumbers {
+            if number == -1 || number == 0 {
+                issueCount += 1
+            }
+        }
+        
+        return issueCount
+    }
+}
+
+// MARK: - UITextFieldDelegate
+extension QRScanResultViewController: UITextFieldDelegate {
+    func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
+        // Allow only numeric input
+        let allowedCharacters = CharacterSet.decimalDigits
+        let characterSet = CharacterSet(charactersIn: string)
+        return allowedCharacters.isSuperset(of: characterSet)
+    }
+    
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        guard let button = currentEditingButton else { return }
+        
+        // Get the entered value
+        let text = textField.text ?? ""
+        let number = Int(text) ?? 0
+        
+        // Determine if this is a powerball button
+        let isPowerball = button.accessibilityIdentifier == "powerball"
+        let maxValue = isPowerball ? 26 : 69
+        
+        // Validate and update button
+        if number >= 1 && number <= maxValue {
+            button.setTitle(String(number), for: .normal)
+            button.backgroundColor = .white
+            button.setTitleColor(.label, for: .normal)
+            // Update the underlying data with valid number
+            updateLotteryDataFromButton(button, newValue: number)
+        } else {
+            // Invalid number or empty field, set to empty (0)
+            button.setTitle("", for: .normal)
+            button.backgroundColor = .systemGray6
+            button.setTitleColor(.clear, for: .normal)
+            // Update the underlying data with 0 (empty)
+            updateLotteryDataFromButton(button, newValue: 0)
+        }
+        
+        // Update toast based on current issues
+        let currentIssues = countCurrentIssues()
+        updateIssuesToast(count: currentIssues)
+        
+        // End editing
+        endEditing()
+    }
+    
+    private func updateLotteryDataFromButton(_ button: UIButton, newValue: Int) {
+        // Find which row and column this button represents
+        guard let stackView = button.superview as? UIStackView,
+              let rowView = stackView.superview as? UIView else { return }
+        
+        // Find row index
+        var rowIndex = -1
+        for (index, arrangedSubview) in numbersStackView.arrangedSubviews.enumerated() {
+            if arrangedSubview == rowView {
+                rowIndex = index
+                break
+            }
+        }
+        
+        guard rowIndex >= 0 && rowIndex < lotteryNumbers.count else { return }
+        
+        // Check if this is a powerball button (last button in row)
+        if let lastButton = stackView.arrangedSubviews.last as? UIButton,
+           lastButton == button {
+            // This is a powerball button
+            powerballNumbers[rowIndex] = newValue
+        } else {
+            // This is a regular number button
+            // Find column index
+            var colIndex = -1
+            for (index, arrangedSubview) in stackView.arrangedSubviews.enumerated() {
+                if arrangedSubview == button {
+                    colIndex = index
+                    break
+                }
+            }
+            
+            guard colIndex >= 0 && colIndex < lotteryNumbers[rowIndex].count else { return }
+            lotteryNumbers[rowIndex][colIndex] = newValue
+        }
     }
 }
 
@@ -3316,5 +3708,6 @@ extension ViewController {
         showScanQRAlert()
     }
 }
+
 
 

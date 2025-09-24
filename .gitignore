@@ -136,3 +136,8 @@ Temporary Items
 # OS generated files
 Thumbs.db
 ehthumbs.db
+
+# API Keys and sensitive configuration
+APIKeys.swift
+Config.swift
+*.secrets

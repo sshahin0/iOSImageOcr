@@ -57,9 +57,50 @@ The app generates authentic-looking lottery tickets with:
 
 You can easily customize the QR code content by modifying the `message` variable in the `generateQRCode()` method in `ViewController.swift`.
 
+## API Configuration
+
+This app uses external APIs that require API keys:
+
+### Required API Keys
+
+1. **OpenAI API Key** - For lottery number OCR scanning
+   - Get your key from: https://platform.openai.com/api-keys
+   - Used for advanced image recognition of lottery tickets
+
+2. **Magayo API Key** - For lottery results checking
+   - Get your key from: https://www.magayo.com/api/
+   - Used to check winning numbers against scanned tickets
+
+### Setup Instructions
+
+1. **Copy the template file:**
+   ```bash
+   cp QRLottery/APIKeys.swift.template QRLottery/APIKeys.swift
+   ```
+
+2. **Add your API keys:**
+   - Open `QRLottery/APIKeys.swift`
+   - Replace `YOUR_OPENAI_API_KEY_HERE` with your actual OpenAI API key
+   - Replace `YOUR_MAGAYO_API_KEY_HERE` with your actual Magayo API key
+
+3. **Security Note:**
+   - `APIKeys.swift` is excluded from git commits for security
+   - Only `APIKeys.swift.template` is committed to version control
+   - Never commit your actual API keys to the repository
+
 ## Dependencies
 
 - UIKit (built-in)
 - CoreImage (built-in)
+- Vision (built-in) - For OCR functionality
+- OpenAI Vision API - For advanced lottery ticket scanning
+- Magayo API - For lottery results checking
 
-No external dependencies required!
+## Features
+
+- **🎫 Lottery Ticket Scanning**: Advanced OCR using OpenAI Vision API
+- **🔍 QR Code Scanning**: Built-in QR code scanner
+- **📊 Lottery Results**: Check winning numbers via Magayo API
+- **✏️ Editable Numbers**: Tap any number to edit manually
+- **🍞 Issue Tracking**: Persistent toast shows scanning issues until resolved
+- **⌨️ Keyboard Support**: Auto-scrolling when editing numbers

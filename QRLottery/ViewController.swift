@@ -2203,21 +2203,215 @@ class QRScanResultViewController: UIViewController {
         }
     }
     
+    // MARK: - Data Models
+    
+    struct LotteryResult: Codable {
+        let error: Int?
+        let draw: String?
+        let results: String?
+    }
+    
+    struct LotteryAPIError: Error {
+        let message: String
+        let code: Int?
+    }
+    
+    // MARK: - Configuration
+    
+    // magayo.com API key for lottery results
+    private let apiKey = "WHQCbHNed8W8xTG7JE"
+    
+    // MARK: - Network Service
+    
+    private func fetchLotteryResults(completion: @escaping (Result<LotteryResult, LotteryAPIError>) -> Void) {
+        // Detect the lottery game type from the scanned numbers
+        let gameType = detectLotteryGameType()
+        
+        // Build URL with required parameters
+        var components = URLComponents(string: "https://www.magayo.com/api/results.php")!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "game", value: gameType),
+            URLQueryItem(name: "format", value: "json")
+        ]
+        
+        guard let url = components.url else {
+            completion(.failure(LotteryAPIError(message: "Invalid URL", code: nil)))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(LotteryAPIError(message: "Network error: \(error.localizedDescription)", code: nil)))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(LotteryAPIError(message: "No data received", code: nil)))
+                return
+            }
+            
+            do {
+                let lotteryResult = try JSONDecoder().decode(LotteryResult.self, from: data)
+                
+                // Check if there's an API error
+                if let errorCode = lotteryResult.error, errorCode != 0 {
+                    let errorMessage = self.getErrorMessage(for: errorCode)
+                    completion(.failure(LotteryAPIError(message: errorMessage, code: errorCode)))
+                    return
+                }
+                
+                completion(.success(lotteryResult))
+            } catch {
+                completion(.failure(LotteryAPIError(message: "Failed to parse response: \(error.localizedDescription)", code: nil)))
+            }
+        }.resume()
+    }
+    
+    // MARK: - Game Detection
+    
+    private func detectLotteryGameType() -> String {
+        // Analyze the scanned numbers to determine the lottery game type
+        let userNumbers = lotteryNumbers.flatMap { $0 }.filter { $0 > 0 }
+        let hasPowerball = powerballNumbers.contains { $0 > 0 }
+        
+        // Default to USA Powerball if we have powerball numbers
+        if hasPowerball {
+            return "us_powerball"
+        }
+        
+        // Check number ranges to determine game type
+        let maxNumber = userNumbers.max() ?? 0
+        
+        if maxNumber <= 49 {
+            return "us_powerball" // Default fallback
+        } else if maxNumber <= 69 {
+            return "us_powerball"
+        } else {
+            return "us_powerball" // Default fallback
+        }
+        
+        // Note: You may want to add more sophisticated game detection
+        // based on the specific lottery tickets you're scanning
+    }
+    
+    // MARK: - Error Handling
+    
+    private func getErrorMessage(for errorCode: Int) -> String {
+        switch errorCode {
+        case 100:
+            return "API key not provided. Please configure your API key."
+        case 101:
+            return "Invalid API key. Please check your API key configuration."
+        case 102:
+            return "API key not found. Please check your API key configuration."
+        case 200:
+            return "Game not provided. Please check game detection logic."
+        case 201:
+            return "Invalid game. Please check game detection logic."
+        case 202:
+            return "Game not found. Please check game detection logic."
+        case 300:
+            return "Account suspended. Please contact magayo support."
+        case 303:
+            return "API limit reached. Consider upgrading your API plan."
+        case 400:
+            return "Invalid draw date format."
+        case 401:
+            return "No draw results found for the specified date."
+        default:
+            return "API Error: \(errorCode)"
+        }
+    }
+    
     private func checkForWinners() {
-        // Simulate checking for winners
+        // Show loading alert
         let alert = UIAlertController(title: "Checking Winners", message: "Checking your lottery numbers against winning numbers...", preferredStyle: .alert)
         present(alert, animated: true)
         
-        // Simulate delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            alert.dismiss(animated: true) {
-                self.showWinningResults()
+        // Call the lottery results API
+        fetchLotteryResults { [weak self] result in
+            DispatchQueue.main.async {
+                alert.dismiss(animated: true) {
+                    switch result {
+                    case .success(let lotteryResult):
+                        self?.showWinningResults(with: lotteryResult)
+                    case .failure(let error):
+                        self?.showErrorAlert(error: error)
+                    }
+                }
             }
         }
     }
     
-    private func showWinningResults() {
-        let alert = UIAlertController(title: "Winning Results", message: "No winning numbers found. Better luck next time!", preferredStyle: .alert)
+    private func showWinningResults(with result: LotteryResult) {
+        var message = ""
+        
+        // Display draw date
+        if let draw = result.draw, !draw.isEmpty && draw != "-" {
+            message += "Draw Date: \(draw)\n\n"
+        }
+        
+        // Display winning numbers
+        if let results = result.results, !results.isEmpty && results != "-" {
+            let winningNumbers = results.components(separatedBy: ",")
+            message += "Winning Numbers: \(winningNumbers.joined(separator: ", "))\n\n"
+            
+            // Check for matches with user's numbers
+            let matches = checkForMatches(winningNumbers: winningNumbers)
+            if matches.count > 0 {
+                message += "🎉 You have \(matches.count) matching number(s): \(matches.joined(separator: ", "))\n\n"
+            } else {
+                message += "No matching numbers found.\n\n"
+            }
+        }
+        
+        // Display user's scanned numbers
+        if !lotteryNumbers.isEmpty {
+            message += "Your Numbers:\n"
+            for (index, row) in lotteryNumbers.enumerated() {
+                if !row.allSatisfy({ $0 == 0 }) {
+                    let rowLabel = ["A", "B", "C", "D", "E"][index]
+                    let numbersString = row.map { $0 == 0 ? "⚪" : "\($0)" }.joined(separator: " ")
+                    let powerballString = powerballNumbers[index] > 0 ? " PB: \(powerballNumbers[index])" : ""
+                    message += "\(rowLabel): \(numbersString)\(powerballString)\n"
+                }
+            }
+        }
+        
+        if message.isEmpty {
+            message = "No lottery data available. Please try again later."
+        }
+        
+        let alert = UIAlertController(title: "Lottery Results", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func checkForMatches(winningNumbers: [String]) -> [String] {
+        var matches: [String] = []
+        
+        // Convert winning numbers to integers
+        let winningInts = winningNumbers.compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        
+        // Check each row of user's numbers
+        for row in lotteryNumbers {
+            for number in row {
+                if number > 0 && winningInts.contains(number) {
+                    matches.append("\(number)")
+                }
+            }
+        }
+        
+        return Array(Set(matches)) // Remove duplicates
+    }
+    
+    private func showErrorAlert(error: LotteryAPIError) {
+        let alert = UIAlertController(title: "Error", message: error.message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }

@@ -9,10 +9,773 @@ struct TicketRow {
     let special: Int?    // last (red) number if present
 }
 
+struct NumberPosition: Hashable {
+    let row: Int          // Row index (0-4 for A-E)
+    let column: Int       // Column index (0-4 for main numbers, 5 for special)
+    let image: UIImage    // Cropped image of the number
+    let originalBounds: CGRect // Position in original image
+    let isSpecial: Bool  // Whether this is a special number (Mega Ball, Powerball, etc.)
+    
+    // Hashable conformance - use row and column for hashing since they uniquely identify position
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(row)
+        hasher.combine(column)
+        hasher.combine(isSpecial)
+    }
+    
+    // Equatable conformance
+    static func == (lhs: NumberPosition, rhs: NumberPosition) -> Bool {
+        return lhs.row == rhs.row && 
+               lhs.column == rhs.column && 
+               lhs.isSpecial == rhs.isSpecial
+    }
+}
+
+struct LotteryGrid {
+    let rows: Int
+    let columns: Int
+    let numberPositions: [NumberPosition]
+}
+
 final class TicketNumberOCR {
     
+    // MARK: - OpenAI Integration
+    
+    private let openAIAPIKey = "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" // Replace with your OpenAI API key
+    private let openAIBaseURL = "https://api.openai.com/v1/chat/completions"
+    
+    func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
+            return
+        }
+        
+        let base64Image = imageData.base64EncodedString()
+        
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o",
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": """
+                            Analyze this lottery ticket image and extract all the lottery numbers. 
+                            
+                            Please identify:
+                            1. The lottery game type (e.g., Mega Millions, Powerball, EuroMillions, etc.)
+                            2. All rows of numbers (typically 5 rows labeled A, B, C, D, E)
+                            3. Regular numbers (usually 5 numbers per row)
+                            4. Special numbers (Mega Ball, Powerball, Euro Ball, etc.)
+                            
+                            Return the data in this exact JSON format:
+                            {
+                                "game_type": "detected_game_name",
+                                "rows": [
+                                    {
+                                        "row_label": "A",
+                                        "regular_numbers": [1, 2, 3, 4, 5],
+                                        "special_number": 25
+                                    }
+                                ]
+                            }
+                            
+                            If you cannot clearly see or parse a number, return -1 in that exact position. Only return integers. Keep array lengths; do not omit elements.
+                            """
+                        ],
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/jpeg;base64,\(base64Image)"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "max_tokens": 1000
+        ]
+        
+        guard let url = URL(string: openAIBaseURL) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "OpenAI", code: -3, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let choices = json["choices"] as? [[String: Any]],
+                   let firstChoice = choices.first,
+                   let message = firstChoice["message"] as? [String: Any],
+                   let content = message["content"] as? String {
+                    
+                    // Parse the OpenAI response
+                    self.parseOpenAIResponse(content: content, completion: completion)
+                } else {
+                    completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                }
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+    
+    private func parseOpenAIResponse(content: String, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        // Extract JSON from the response (it might be wrapped in markdown)
+        let jsonPattern = #"```json\s*(\{[\s\S]*?\})\s*```"#
+        let fallbackPattern = #"(\{[\s\S]*?\})"#
+        
+        var jsonString: String?
+        
+        if let range = content.range(of: jsonPattern, options: .regularExpression) {
+            jsonString = String(content[range])
+            jsonString = jsonString?.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if let range = content.range(of: fallbackPattern, options: .regularExpression) {
+            jsonString = String(content[range])
+        }
+        
+        guard let json = jsonString,
+              let data = json.data(using: .utf8) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -5, userInfo: [NSLocalizedDescriptionKey: "Could not extract JSON from response"])))
+            return
+        }
+        
+        do {
+            if let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let rows = parsed["rows"] as? [[String: Any]] {
+                
+                var ticketRows: [TicketRow] = []
+                
+                for rowData in rows {
+                    let regularNumbersRaw = (rowData["regular_numbers"] as? [Any]) ?? []
+                    // Coerce each element to Int; use -1 if missing/invalid
+                    let coercedRegulars: [Int] = regularNumbersRaw.map { elem in
+                        if let v = elem as? Int { return v }
+                        if let s = elem as? String, let v = Int(s) { return v }
+                        return -1
+                    }
+                    let specialRaw = rowData["special_number"]
+                    let specialNumber: Int? = {
+                        if let v = specialRaw as? Int { return v }
+                        if let s = specialRaw as? String, let v = Int(s) { return v }
+                        return -1
+                    }()
+                    
+                    // Pad to 5 numbers if needed with -1 for unknowns
+                    let paddedNumbers = coercedRegulars + Array(repeating: -1, count: max(0, 5 - coercedRegulars.count))
+                    
+                    let ticketRow = TicketRow(numbers: paddedNumbers, special: specialNumber)
+                    ticketRows.append(ticketRow)
+                }
+                
+                print("OpenAI OCR Success - Found \(ticketRows.count) rows")
+                completion(.success(ticketRows))
+            } else {
+                completion(.failure(NSError(domain: "OpenAI", code: -6, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON structure"])))
+            }
+        } catch {
+            completion(.failure(error))
+        }
+    }
+    
+    // MARK: - Grid Detection and Individual Number Scanning
+    
+    func parseTicketWithGridDetection(from image: UIImage, gameType: String = "us_mega_millions", completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        // Step 1: Preprocess the image
+        let processedImage = preprocessImageForOCR(image)
+        
+        // Step 2: Detect the lottery grid structure
+        detectLotteryGrid(from: processedImage) { [weak self] result in
+            switch result {
+            case .success(let grid):
+                print("Grid Detection - Found \(grid.numberPositions.count) number positions")
+                
+                // Step 3: Scan each individual number with initial game type
+                self?.scanIndividualNumbers(grid: grid, gameType: gameType) { scanResult in
+                    switch scanResult {
+                    case .success(let rows):
+                        // Check if we got meaningful results
+                        let totalNumbers = rows.flatMap { $0.numbers }.filter { $0 > 0 }.count
+                        let totalSpecials = rows.compactMap { $0.special }.filter { $0 > 0 }.count
+                        
+                        if totalNumbers >= 5 || totalSpecials >= 1 {
+                            // Step 4: Detect actual game type from scanned numbers and re-scan if needed
+                            let detectedGameType = self?.detectGameTypeFromRows(rows) ?? gameType
+                            if detectedGameType != gameType {
+                                print("Detected game type: \(detectedGameType), re-scanning with correct constraints")
+                                self?.scanIndividualNumbers(grid: grid, gameType: detectedGameType, completion: completion)
+                            } else {
+                                completion(.success(rows))
+                            }
+                        } else {
+                            print("Local OCR failed to extract meaningful numbers, trying OpenAI...")
+                            // Fallback to OpenAI Vision API
+                            self?.scanWithOpenAI(image: image, completion: completion)
+                        }
+                    case .failure(let error):
+                        print("Local OCR failed: \(error.localizedDescription), trying OpenAI...")
+                        // Fallback to OpenAI Vision API
+                        self?.scanWithOpenAI(image: image, completion: completion)
+                    }
+                }
+                
+            case .failure(let error):
+                print("Grid Detection Error: \(error.localizedDescription), trying OpenAI...")
+                // Fallback to OpenAI Vision API
+                self?.scanWithOpenAI(image: image, completion: completion)
+            }
+        }
+    }
+    
+    private func detectLotteryGrid(from image: UIImage, completion: @escaping (Result<LotteryGrid, Error>) -> Void) {
+        guard let cgImage = image.cgImage else {
+            completion(.failure(NSError(domain: "GridDetection", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid image"])))
+            return
+        }
+        
+        // Use Vision to detect text regions
+        let request = VNRecognizeTextRequest { request, error in
+            guard error == nil,
+                  let observations = request.results as? [VNRecognizedTextObservation] else {
+                completion(.failure(error ?? NSError(domain: "GridDetection", code: -2)))
+                return
+            }
+            
+            // Extract number regions
+            let numberRegions = self.extractNumberRegions(from: observations, imageSize: image.size)
+            
+            // Detect grid structure
+            let grid = self.detectGridStructure(numberRegions: numberRegions, image: image)
+            
+            completion(.success(grid))
+        }
+        
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.minimumTextHeight = 0.01 // Very small to catch individual numbers
+        
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try handler.perform([request])
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+    
+    private func extractNumberRegions(from observations: [VNRecognizedTextObservation], imageSize: CGSize) -> [(text: String, bounds: CGRect)] {
+        var numberRegions: [(text: String, bounds: CGRect)] = []
+        
+        for observation in observations {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            let text = candidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Check if this looks like a lottery number
+            if self.isLotteryNumber(text) {
+                // Convert normalized coordinates to image coordinates
+                let imageBounds = VNImageRectForNormalizedRect(
+                    observation.boundingBox,
+                    Int(imageSize.width),
+                    Int(imageSize.height)
+                )
+                
+                numberRegions.append((text: text, bounds: imageBounds))
+                print("Found number region: '\(text)' at \(imageBounds)")
+            }
+        }
+        
+        return numberRegions
+    }
+    
+    private func isLotteryNumber(_ text: String) -> Bool {
+        // Check if text contains only digits and is a reasonable lottery number
+        guard text.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil else { return false }
+        
+        if let number = Int(text) {
+            return (1...99).contains(number) // Most lottery numbers are 1-99
+        }
+        
+        return false
+    }
+    
+    private func detectGridStructure(numberRegions: [(text: String, bounds: CGRect)], image: UIImage) -> LotteryGrid {
+        // Sort regions by position (top to bottom, left to right)
+        let sortedRegions = numberRegions.sorted { region1, region2 in
+            let dy = abs(region1.bounds.midY - region2.bounds.midY)
+            return dy < 20 ? region1.bounds.minX < region2.bounds.minX : region1.bounds.midY < region2.bounds.midY
+        }
+        
+        // Group into rows based on Y-coordinate proximity
+        var rows: [[(text: String, bounds: CGRect)]] = []
+        var currentRow: [(text: String, bounds: CGRect)] = []
+        var lastY: CGFloat = -1
+        
+        for region in sortedRegions {
+            if lastY == -1 || abs(region.bounds.midY - lastY) < 30 {
+                currentRow.append(region)
+            } else {
+                if !currentRow.isEmpty {
+                    rows.append(currentRow)
+                }
+                currentRow = [region]
+            }
+            lastY = region.bounds.midY
+        }
+        if !currentRow.isEmpty {
+            rows.append(currentRow)
+        }
+        
+        print("Grid Detection - Found \(rows.count) rows")
+        
+        // Create number positions
+        var numberPositions: [NumberPosition] = []
+        
+        for (rowIndex, row) in rows.enumerated() {
+            // Sort row by X coordinate
+            let sortedRow = row.sorted { $0.bounds.minX < $1.bounds.minX }
+            
+            for (colIndex, region) in sortedRow.enumerated() {
+                // Crop individual number image
+                if let numberImage = self.cropNumberImage(from: image, bounds: region.bounds) {
+                    let isSpecial = colIndex >= 5 // Assume special numbers are in column 5+
+                    let position = NumberPosition(
+                        row: rowIndex,
+                        column: colIndex,
+                        image: numberImage,
+                        originalBounds: region.bounds,
+                        isSpecial: isSpecial
+                    )
+                    numberPositions.append(position)
+                    
+                    print("Created position: Row \(rowIndex), Col \(colIndex), Special: \(isSpecial)")
+                }
+            }
+        }
+        
+        return LotteryGrid(rows: rows.count, columns: 6, numberPositions: numberPositions)
+    }
+    
+    private func cropNumberImage(from image: UIImage, bounds: CGRect) -> UIImage? {
+        // Add padding around the number (slightly larger to ensure full glyph capture)
+        let padding: CGFloat = 18
+        let expandedBounds = CGRect(
+            x: max(0, bounds.minX - padding),
+            y: max(0, bounds.minY - padding),
+            width: min(image.size.width - bounds.minX + padding, bounds.width + 2 * padding),
+            height: min(image.size.height - bounds.minY + padding, bounds.height + 2 * padding)
+        )
+        
+        guard let cgImage = image.cgImage?.cropping(to: expandedBounds) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+    
+    private func scanIndividualNumbers(grid: LotteryGrid, gameType: String, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        let dispatchGroup = DispatchGroup()
+        var results: [NumberPosition: Int] = [:]
+        var errors: [Error] = []
+        
+        // Determine constraints based on detected game
+        let constraints = self.getGameConstraints(for: gameType)
+        
+        // Scan each number individually
+        for position in grid.numberPositions {
+            dispatchGroup.enter()
+            
+            scanSingleNumber(position: position, image: position.image, maxMain: constraints.maxMain, maxSpecial: constraints.maxSpecial) { result in
+                defer { dispatchGroup.leave() }
+                
+                switch result {
+                case .success(let number):
+                    results[position] = number
+                    print("Scanned number at Row \(position.row), Col \(position.column): \(number)")
+                case .failure(let error):
+                    errors.append(error)
+                    print("Failed to scan number at Row \(position.row), Col \(position.column): \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        // Wait for all scans to complete
+        dispatchGroup.notify(queue: .main) {
+            if !errors.isEmpty {
+                print("Some number scans failed: \(errors.count) errors")
+            }
+            
+            // Reconstruct lottery data
+            let ticketRows = self.reconstructTicketRows(from: grid, results: results)
+            completion(.success(ticketRows))
+        }
+    }
+    
+    private func scanSingleNumber(position: NumberPosition, image: UIImage, maxMain: Int, maxSpecial: Int, completion: @escaping (Result<Int, Error>) -> Void) {
+        // Build preprocessing variants to try sequentially
+        let variants = generateDigitVariants(from: image)
+        
+        func runOCR(on cgImage: CGImage, completion: @escaping (Result<Int, Error>) -> Void) {
+            let request = VNRecognizeTextRequest { request, error in
+            // Helper to normalize OCR text into a clean integer
+            func normalizeToInt(_ raw: String) -> Int? {
+                // Strip non-digits, fix common OCR confusions
+                let cleaned = raw
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "O", with: "0")
+                    .replacingOccurrences(of: "Q", with: "0")
+                    .replacingOccurrences(of: "D", with: "0")
+                    .replacingOccurrences(of: "I", with: "1")
+                    .replacingOccurrences(of: "l", with: "1")
+                    .replacingOccurrences(of: "S", with: "5")
+                    .replacingOccurrences(of: "B", with: "8")
+                    .replacingOccurrences(of: "G", with: "6")
+                    .replacingOccurrences(of: "Z", with: "2")
+                let digits = cleaned.filter({ $0.isNumber })
+                guard !digits.isEmpty else { return nil }
+                // Enforce per-column length: main numbers are 1-2 digits typically
+                var trimmedDigits = digits
+                if !position.isSpecial && trimmedDigits.count > 2 {
+                    trimmedDigits = String(trimmedDigits.suffix(2))
+                }
+                if let value = Int(trimmedDigits) {
+                    if position.isSpecial {
+                        return (1...maxSpecial).contains(value) ? value : nil
+                    } else {
+                        return (1...maxMain).contains(value) ? value : nil
+                    }
+                }
+                return nil
+            }
+            
+            // Primary pass
+            if error == nil,
+               let observations = request.results as? [VNRecognizedTextObservation],
+               let top = observations.first,
+               let candidate = top.topCandidates(1).first,
+               let num = normalizeToInt(candidate.string) {
+                completion(.success(num))
+                return
+            }
+            
+            // Fallback: attempt with more candidates
+            if let observations = request.results as? [VNRecognizedTextObservation] {
+                for obs in observations {
+                    for cand in obs.topCandidates(5) {
+                        if let num = normalizeToInt(cand.string) {
+                            completion(.success(num))
+                            return
+                        }
+                    }
+                }
+            }
+            
+            completion(.failure(error ?? NSError(domain: "SingleNumberOCR", code: -3, userInfo: [NSLocalizedDescriptionKey: "Unable to parse number"])) )
+        }
+            
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = false
+            request.minimumTextHeight = 0.0035 // capture smaller glyphs
+            request.customWords = (0...99).map { String($0) }
+            
+            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try handler.perform([request])
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+        }
+        
+        // Try variants sequentially until one succeeds
+        func tryNext(index: Int) {
+            if index >= variants.count {
+                completion(.failure(NSError(domain: "SingleNumberOCR", code: -4, userInfo: [NSLocalizedDescriptionKey: "All variants failed"])) )
+                return
+            }
+            guard let cg = variants[index].cgImage else { tryNext(index: index + 1); return }
+            runOCR(on: cg) { result in
+                switch result {
+                case .success(let n): completion(.success(n))
+                case .failure: tryNext(index: index + 1)
+                }
+            }
+        }
+        tryNext(index: 0)
+    }
+
+    // Upscale and binarize small digit crops for better OCR
+    private func upscaleAndBinarizeForDigit(_ image: UIImage) -> UIImage {
+        let scale: CGFloat = 3.0
+        let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let upscaled = renderer.image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: newSize))
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+        // Light preprocessing
+        return preprocessImageForOCR(upscaled)
+    }
+
+    // Produce multiple preprocessing variants to improve OCR robustness
+    private func generateDigitVariants(from image: UIImage) -> [UIImage] {
+        var variants: [UIImage] = []
+        let base = upscaleAndBinarizeForDigit(image)
+        variants.append(base)
+        
+        // Stronger contrast/sharpen variant
+        if let cg = base.cgImage {
+            var ci = CIImage(cgImage: cg)
+            if let controls = CIFilter(name: "CIColorControls") {
+                controls.setValue(ci, forKey: kCIInputImageKey)
+                controls.setValue(2.0, forKey: kCIInputContrastKey)
+                controls.setValue(0.15, forKey: kCIInputBrightnessKey)
+                controls.setValue(0.0, forKey: kCIInputSaturationKey)
+                if let out = controls.outputImage { ci = out }
+            }
+            if let sharp = CIFilter(name: "CISharpenLuminance") {
+                sharp.setValue(ci, forKey: kCIInputImageKey)
+                sharp.setValue(1.0, forKey: kCIInputSharpnessKey)
+                if let out = sharp.outputImage { ci = out }
+            }
+            let ctx = CIContext()
+            if let outCG = ctx.createCGImage(ci, from: ci.extent) {
+                variants.append(UIImage(cgImage: outCG))
+            }
+        }
+        
+        // Inverted variant (tickets sometimes have dark text/light noise)
+        if let cg = base.cgImage {
+            let ci = CIImage(cgImage: cg).applyingFilter("CIColorInvert")
+            let ctx = CIContext()
+            if let outCG = ctx.createCGImage(ci, from: ci.extent) {
+                variants.append(UIImage(cgImage: outCG))
+            }
+        }
+        
+        return variants
+    }
+
+    private func getGameConstraints(for game: String) -> (maxMain: Int, maxSpecial: Int) {
+        // Comprehensive game constraints based on magayo.com documentation
+        switch game {
+        // USA Games
+        case "us_mega_millions": return (maxMain: 70, maxSpecial: 25)
+        case "us_powerball": return (maxMain: 69, maxSpecial: 26)
+        case "us_lotto_america": return (maxMain: 52, maxSpecial: 10)
+        case "us_cash4life": return (maxMain: 60, maxSpecial: 4)
+        
+        // European Games
+        case "euromillions": return (maxMain: 50, maxSpecial: 12)
+        case "uk_lotto": return (maxMain: 59, maxSpecial: 0)
+        case "irish_lotto": return (maxMain: 47, maxSpecial: 0)
+        case "spanish_lottery": return (maxMain: 49, maxSpecial: 0)
+        case "italian_superenalotto": return (maxMain: 90, maxSpecial: 0)
+        case "french_lotto": return (maxMain: 49, maxSpecial: 10)
+        case "german_lotto": return (maxMain: 49, maxSpecial: 0)
+        
+        // Australian Games
+        case "au_oz_lotto": return (maxMain: 45, maxSpecial: 0)
+        case "au_powerball": return (maxMain: 35, maxSpecial: 20)
+        case "au_saturday_lotto": return (maxMain: 45, maxSpecial: 0)
+        
+        // Canadian Games
+        case "ca_lotto_max": return (maxMain: 50, maxSpecial: 0)
+        case "ca_lotto_649": return (maxMain: 49, maxSpecial: 0)
+        
+        // Other International Games
+        case "brazil_mega_sena": return (maxMain: 60, maxSpecial: 0)
+        case "mexico_melate": return (maxMain: 56, maxSpecial: 0)
+        case "south_africa_lotto": return (maxMain: 52, maxSpecial: 0)
+        case "japan_lotto": return (maxMain: 43, maxSpecial: 0)
+        
+        default: return (maxMain: 70, maxSpecial: 25) // Default to Mega Millions
+        }
+    }
+    
+    private func detectGameTypeFromRows(_ rows: [TicketRow]) -> String {
+        let allNumbers = rows.flatMap { $0.numbers }.filter { $0 > 0 }
+        let allSpecials = rows.compactMap { $0.special }.filter { $0 > 0 }
+        
+        let maxNumber = allNumbers.max() ?? 0
+        let maxSpecial = allSpecials.max() ?? 0
+        
+        // Detect game type based on number ranges and special ball constraints
+        // USA Games
+        if maxNumber <= 70 && (maxSpecial == 0 || maxSpecial <= 25) {
+            return "us_mega_millions"
+        }
+        if maxNumber <= 69 && (maxSpecial == 0 || maxSpecial <= 26) {
+            return "us_powerball"
+        }
+        if maxNumber <= 52 && (maxSpecial == 0 || maxSpecial <= 10) {
+            return "us_lotto_america"
+        }
+        if maxNumber <= 60 && (maxSpecial == 0 || maxSpecial <= 4) {
+            return "us_cash4life"
+        }
+        
+        // European Games
+        if maxNumber <= 50 && (maxSpecial == 0 || maxSpecial <= 12) {
+            return "euromillions"
+        }
+        if maxNumber <= 59 && maxSpecial == 0 {
+            return "uk_lotto"
+        }
+        if maxNumber <= 47 && maxSpecial == 0 {
+            return "irish_lotto"
+        }
+        if maxNumber <= 90 && maxSpecial == 0 {
+            return "italian_superenalotto"
+        }
+        if maxNumber <= 49 && (maxSpecial == 0 || maxSpecial <= 10) {
+            return "french_lotto"
+        }
+        
+        // Australian Games
+        if maxNumber <= 45 && maxSpecial == 0 {
+            return "au_oz_lotto"
+        }
+        if maxNumber <= 35 && (maxSpecial == 0 || maxSpecial <= 20) {
+            return "au_powerball"
+        }
+        
+        // Canadian Games
+        if maxNumber <= 50 && maxSpecial == 0 {
+            return "ca_lotto_max"
+        }
+        if maxNumber <= 49 && maxSpecial == 0 {
+            return "ca_lotto_649"
+        }
+        
+        // Other International Games
+        if maxNumber <= 60 && maxSpecial == 0 {
+            return "brazil_mega_sena"
+        }
+        if maxNumber <= 56 && maxSpecial == 0 {
+            return "mexico_melate"
+        }
+        if maxNumber <= 52 && maxSpecial == 0 {
+            return "south_africa_lotto"
+        }
+        if maxNumber <= 43 && maxSpecial == 0 {
+            return "japan_lotto"
+        }
+        
+        // Default to Mega Millions for most lottery tickets
+        return "us_mega_millions"
+    }
+    
+    private func reconstructTicketRows(from grid: LotteryGrid, results: [NumberPosition: Int]) -> [TicketRow] {
+        var ticketRows: [TicketRow] = []
+        
+        // Group positions by row
+        let positionsByRow = Dictionary(grouping: grid.numberPositions) { $0.row }
+        
+        for rowIndex in 0..<grid.rows {
+            let rowPositions = positionsByRow[rowIndex] ?? []
+            
+            // Separate regular numbers and special numbers
+            let regularPositions = rowPositions.filter { !$0.isSpecial }.sorted { $0.column < $1.column }
+            let specialPositions = rowPositions.filter { $0.isSpecial }.sorted { $0.column < $1.column }
+            
+            // Extract numbers
+            let regularNumbers = regularPositions.compactMap { results[$0] }
+            let specialNumber = specialPositions.first.flatMap { results[$0] }
+            
+            // Pad regular numbers to 5 if needed
+            let paddedNumbers = regularNumbers + Array(repeating: 0, count: max(0, 5 - regularNumbers.count))
+            
+            let ticketRow = TicketRow(numbers: paddedNumbers, special: specialNumber)
+            ticketRows.append(ticketRow)
+            
+            print("Reconstructed Row \(rowIndex): \(paddedNumbers) Special: \(specialNumber ?? 0)")
+        }
+        
+        return ticketRows
+    }
+    
+    // MARK: - Image Preprocessing
+    
+    private func preprocessImageForOCR(_ image: UIImage) -> UIImage {
+        guard let cgImage = image.cgImage else { return image }
+        
+        let context = CIContext()
+        var ciImage = CIImage(cgImage: cgImage)
+        
+        // 1. Enhance contrast and brightness
+        if let contrastFilter = CIFilter(name: "CIColorControls") {
+            contrastFilter.setValue(ciImage, forKey: kCIInputImageKey)
+            contrastFilter.setValue(1.5, forKey: kCIInputContrastKey) // Increase contrast
+            contrastFilter.setValue(0.1, forKey: kCIInputBrightnessKey) // Slight brightness increase
+            contrastFilter.setValue(1.0, forKey: kCIInputSaturationKey)
+            if let output = contrastFilter.outputImage {
+                ciImage = output
+            }
+        }
+        
+        // 2. Apply sharpening to make text clearer
+        if let sharpenFilter = CIFilter(name: "CISharpenLuminance") {
+            sharpenFilter.setValue(ciImage, forKey: kCIInputImageKey)
+            sharpenFilter.setValue(0.8, forKey: kCIInputSharpnessKey) // Moderate sharpening
+            if let output = sharpenFilter.outputImage {
+                ciImage = output
+            }
+        }
+        
+        // 3. Convert to grayscale to reduce noise
+        if let grayFilter = CIFilter(name: "CIColorMonochrome") {
+            grayFilter.setValue(ciImage, forKey: kCIInputImageKey)
+            grayFilter.setValue(CIColor.white, forKey: kCIInputColorKey)
+            grayFilter.setValue(1.0, forKey: kCIInputIntensityKey)
+            if let output = grayFilter.outputImage {
+                ciImage = output
+            }
+        }
+        
+        // 4. Apply noise reduction using CIGaussianBlur for gentle smoothing
+        if let blurFilter = CIFilter(name: "CIGaussianBlur") {
+            blurFilter.setValue(ciImage, forKey: kCIInputImageKey)
+            blurFilter.setValue(0.5, forKey: kCIInputRadiusKey) // Very light blur for noise reduction
+            if let output = blurFilter.outputImage {
+                ciImage = output
+            }
+        }
+        
+        // Convert back to UIImage
+        guard let outputCGImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return image
+        }
+        
+        return UIImage(cgImage: outputCGImage)
+    }
+    
     func parseTicket(from image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
-        guard let cg = image.cgImage else {
+        // Preprocess the image to improve OCR accuracy
+        let processedImage = preprocessImageForOCR(image)
+        
+        guard let cg = processedImage.cgImage else {
             completion(.failure(NSError(domain: "TicketOCR", code: -1)))
             return
         }
@@ -33,43 +796,78 @@ final class TicketNumberOCR {
                 return dy < 0.01 ? $0.box.minX < $1.box.minX : $0.box.midY > $1.box.midY
             }
             
-            // keep lines that are mostly digits/spaces
+            // Enhanced filtering for lottery ticket numbers
             let digitish = lines
                 .map { (text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines), box: $0.box) }
-                .filter { $0.text.range(of: #"^[0-9\s]+$"#, options: .regularExpression) != nil }
+                .filter { line in
+                    // More flexible pattern to catch lottery numbers with various separators
+                    let text = line.text
+                    return text.range(of: #"^[0-9\s,\|]+$"#, options: .regularExpression) != nil &&
+                           text.count >= 3 && // At least 3 characters (2 digits + separator)
+                           text.range(of: #"[0-9]"#, options: .regularExpression) != nil
+                }
             
-            // group into rows by Y proximity
-            let rows = Self.groupByRows(digitish, yTol: 0.018)
+            print("OCR Debug - Found \(digitish.count) digit-like lines:")
+            for line in digitish {
+                print("  '\(line.text)' at \(line.box)")
+            }
             
-            // parse each row: numbers separated by spaces; last = special
+            // group into rows by Y proximity with tighter tolerance
+            let rows = Self.groupByRows(digitish, yTol: 0.015)
+            
+            // parse each row with enhanced logic
             let parsed: [TicketRow] = rows.compactMap { row -> TicketRow? in
-                let merged = row.map(\.text).joined(separator: " ").replacingOccurrences(of: "  ", with: " ")
-                let tokens = merged.split(separator: " ").compactMap { Int($0) }
+                let merged = row.map(\.text).joined(separator: " ")
+                    .replacingOccurrences(of: "  ", with: " ")
+                    .replacingOccurrences(of: ",", with: " ")
+                    .replacingOccurrences(of: "|", with: " ")
+                
+                // Extract numbers more intelligently
+                let tokens = merged.split(separator: " ").compactMap { token -> Int? in
+                    let cleaned = String(token).trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Handle common OCR mistakes
+                    let corrected = cleaned
+                        .replacingOccurrences(of: "O", with: "0")
+                        .replacingOccurrences(of: "I", with: "1")
+                        .replacingOccurrences(of: "l", with: "1")
+                        .replacingOccurrences(of: "S", with: "5")
+                        .replacingOccurrences(of: "B", with: "8")
+                    return Int(corrected)
+                }
                 
                 print("OCR Debug - Processing row text: '\(merged)' -> tokens: \(tokens)")
                 
-                // Only process rows that have at least 2 numbers (1 regular + 1 special minimum)
-                guard tokens.count >= 2 else { 
-                    print("OCR Debug - Skipping row (insufficient numbers): \(tokens)")
+                // More flexible row validation - allow rows with just numbers
+                guard tokens.count >= 1 else { 
+                    print("OCR Debug - Skipping row (no numbers): \(tokens)")
                     return nil 
                 }
                 
-                // Separate regular numbers and special number
-                let specials = tokens.last
-                let normals = Array(tokens.dropLast())
-                
-                // Apply sanity filters but keep invalid numbers as 0 (empty circles)
-                let saneNormals = normals.map { num in
-                    (1...70).contains(num) ? num : 0  // 0 means empty circle
+                // Detect if this looks like a lottery row (5 main numbers + 1 special)
+                if tokens.count >= 5 {
+                    // Likely a full lottery row
+                    let specials = tokens.count > 5 ? tokens.last : nil
+                    let normals = Array(tokens.prefix(5))
+                    
+                    let saneNormals = normals.map { num in
+                        (1...70).contains(num) ? num : 0
+                    }
+                    let saneSpecial = specials.flatMap { num in
+                        (1...99).contains(num) ? num : 0
+                    }
+                    
+                    print("OCR Debug - Parsed full row: \(saneNormals) PB: \(saneSpecial ?? 0)")
+                    return TicketRow(numbers: saneNormals, special: saneSpecial)
+                } else {
+                    // Partial row - pad with zeros
+                    let paddedNumbers = Array(tokens.prefix(5)) + Array(repeating: 0, count: max(0, 5 - tokens.count))
+                    let saneNormals = paddedNumbers.map { num in
+                        (1...70).contains(num) ? num : 0
+                    }
+                    
+                    print("OCR Debug - Parsed partial row: \(saneNormals)")
+                    return TicketRow(numbers: saneNormals, special: nil)
                 }
-                let saneSpecial = specials.flatMap { num in
-                    (1...99).contains(num) ? num : 0  // 0 means empty circle
-                }
-                
-                print("OCR Debug - Parsed row: \(saneNormals) PB: \(saneSpecial ?? 0)")
-                
-                // Always return a row, even if some numbers are 0
-                return TicketRow(numbers: saneNormals, special: saneSpecial)
             }
             
             completion(.success(parsed))
@@ -77,7 +875,7 @@ final class TicketNumberOCR {
         
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = false
-        req.minimumTextHeight = 0.02
+        req.minimumTextHeight = 0.015 // Reduced for smaller text
         req.recognitionLanguages = ["en-US"]
         
         let handler = VNImageRequestHandler(cgImage: cg, options: [:])
@@ -1329,17 +2127,18 @@ class QRScannerViewController: UIViewController {
             DispatchQueue.main.async {
                 self.showNoDataFoundAlert()
             }
-                        return
-                    }
+            return
+        }
         
         let image = UIImage(cgImage: cgImage)
         let ocr = TicketNumberOCR()
         
-        ocr.parseTicket(from: image) { result in
+        // OpenAI-only scanning path (local OCR disabled)
+        ocr.scanWithOpenAI(image: image) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let rows):
-                    print("Ticket OCR Success - Found \(rows.count) rows:")
+                    print("OpenAI OCR Success - Found \(rows.count) rows:")
                     for (index, row) in rows.enumerated() {
                         let regularStr = row.numbers.map { $0 == 0 ? "empty" : String($0) }.joined(separator: ", ")
                         let powerballStr = (row.special ?? 0) == 0 ? "empty" : String(row.special!)
@@ -1348,12 +2147,12 @@ class QRScannerViewController: UIViewController {
                     
                     // Convert to lottery data format
                     let lotteryData = self.convertTicketRowsToLotteryData(rows)
-                    print("OCR Processing - Generated lottery data: '\(lotteryData)'")
+                    print("OpenAI OCR Processing - Generated lottery data: '\(lotteryData)'")
                     
                     if !lotteryData.isEmpty {
                         AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
                         self.captureSession.stopRunning()
-                        print("OCR Processing - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
+                        print("OpenAI OCR Processing - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
                         self.delegate?.didScanQRCode(lotteryData, image: self.capturedImage)
                     } else {
                         print("No valid lottery data found")
@@ -1361,7 +2160,7 @@ class QRScannerViewController: UIViewController {
                     }
                     
                 case .failure(let error):
-                    print("Ticket OCR Error: \(error.localizedDescription)")
+                    print("OpenAI OCR Error: \(error.localizedDescription)")
                     self.showNoDataFoundAlert()
                 }
             }
@@ -1385,14 +2184,14 @@ class QRScannerViewController: UIViewController {
         
         print("ConvertTicketRows - Valid rows count: \(validRows.count)")
         
-        // Process up to 5 rows, filling with empty rows if needed
+        // Process up to 5 rows, filling with -1 when unknown as requested
         for i in 0..<5 {
             if i < validRows.count {
                 let row = validRows[i]
                 // Ensure we have exactly 5 regular numbers and 1 powerball
                 let regularNumbers = Array(row.numbers.prefix(5))
-                let paddedRegulars = regularNumbers + Array(repeating: 0, count: max(0, 5 - regularNumbers.count))
-                let powerball = row.special ?? 0
+                let paddedRegulars = regularNumbers + Array(repeating: -1, count: max(0, 5 - regularNumbers.count))
+                let powerball = row.special ?? -1
                 
                 let regularNumbersStr = paddedRegulars.map { String($0) }.joined(separator: " ")
                 let powerballStr = String(powerball)
@@ -1400,8 +2199,8 @@ class QRScannerViewController: UIViewController {
                 allRows.append(rowData)
                 print("  Converted row \(i): '\(rowData)'")
             } else {
-                // Add empty row (all 0s)
-                let emptyRow = "0 0 0 0 0 0"
+                // Add empty row (all -1s)
+                let emptyRow = "-1 -1 -1 -1 -1 -1"
                 allRows.append(emptyRow)
                 print("  Empty row \(i): '\(emptyRow)'")
             }
@@ -2278,25 +3077,30 @@ class QRScanResultViewController: UIViewController {
         // Analyze the scanned numbers to determine the lottery game type
         let userNumbers = lotteryNumbers.flatMap { $0 }.filter { $0 > 0 }
         let hasPowerball = powerballNumbers.contains { $0 > 0 }
-        
-        // Default to USA Powerball if we have powerball numbers
-        if hasPowerball {
-            return "us_powerball"
-        }
-        
-        // Check number ranges to determine game type
         let maxNumber = userNumbers.max() ?? 0
         
-        if maxNumber <= 49 {
-            return "us_powerball" // Default fallback
-        } else if maxNumber <= 69 {
-            return "us_powerball"
-        } else {
-            return "us_powerball" // Default fallback
+        // Check if we have Mega Millions (numbers up to 70, Mega Ball up to 25)
+        if maxNumber <= 70 && powerballNumbers.allSatisfy({ $0 == 0 || $0 <= 25 }) {
+            return "us_mega_millions"
         }
         
-        // Note: You may want to add more sophisticated game detection
-        // based on the specific lottery tickets you're scanning
+        // Check if we have Powerball (numbers up to 69, Powerball up to 26)
+        if maxNumber <= 69 && powerballNumbers.allSatisfy({ $0 == 0 || $0 <= 26 }) {
+            return "us_powerball"
+        }
+        
+        // Check if we have Lotto America (numbers up to 52, Star Ball up to 10)
+        if maxNumber <= 52 && powerballNumbers.allSatisfy({ $0 == 0 || $0 <= 10 }) {
+            return "us_lotto_america"
+        }
+        
+        // Check if we have Cash4Life (numbers up to 60, Cash Ball up to 4)
+        if maxNumber <= 60 && powerballNumbers.allSatisfy({ $0 == 0 || $0 <= 4 }) {
+            return "us_cash4life"
+        }
+        
+        // Default to Mega Millions for most lottery tickets
+        return "us_mega_millions"
     }
     
     // MARK: - Error Handling

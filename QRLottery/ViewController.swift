@@ -2861,11 +2861,14 @@ class QRScanResultViewController: UIViewController {
             parseLotteryNumbers()
             setupNumbersGrid()
             
-            // Show persistent toast if there are issues
-            let issueCount = countCurrentIssues()
-            if issueCount > 0 {
-                showPersistentIssuesToast(count: issueCount)
-            }
+        // Show persistent toast if there are issues
+        let issueCount = countCurrentIssues()
+        if issueCount > 0 {
+            showPersistentIssuesToast(count: issueCount)
+        }
+        
+        // Update action button state
+        updateActionButtonState()
         } else {
             titleLabel.text = "QR Code Scanned"
             titleLabel.textColor = .systemBlue
@@ -3108,8 +3111,36 @@ class QRScanResultViewController: UIViewController {
     
     @objc private func actionButtonTapped() {
         if isLotteryTicket {
-            // Check for winners functionality
-            checkForWinners()
+            // Check if button is disabled due to issues
+            if !actionButton.isEnabled {
+                let issueCount = countCurrentIssues()
+                showVerificationAlert(title: "Complete All Fields", 
+                                   message: "Please fill in all \(issueCount) empty fields before checking for winners.")
+                return
+            }
+            
+            // Show lottery options
+            let alert = UIAlertController(title: "Lottery Options", 
+                                       message: "What would you like to do?", 
+                                       preferredStyle: .actionSheet)
+            
+            alert.addAction(UIAlertAction(title: "Check for Winners", style: .default) { _ in
+                self.checkForWinners()
+            })
+            
+            alert.addAction(UIAlertAction(title: "Verify Ticket Authenticity", style: .default) { _ in
+                self.verifyTicketAuthenticity()
+            })
+            
+            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+            
+            // For iPad
+            if let popover = alert.popoverPresentationController {
+                popover.sourceView = actionButton
+                popover.sourceRect = actionButton.bounds
+            }
+            
+            present(alert, animated: true)
         } else {
             // Copy to clipboard
             UIPasteboard.general.string = scannedCode
@@ -3572,6 +3603,396 @@ class QRScanResultViewController: UIViewController {
         }
     }
     
+    // MARK: - Ticket Verification
+    func verifyTicketAuthenticity() {
+        // Check if all fields are filled
+        let issueCount = countCurrentIssues()
+        if issueCount > 0 {
+            showVerificationAlert(title: "Incomplete Ticket", 
+                                message: "Please fill in all lottery numbers before verification.")
+            return
+        }
+        
+        // Show verification options
+        let alert = UIAlertController(title: "Verify Ticket Authenticity", 
+                                   message: "Choose verification method:", 
+                                   preferredStyle: .actionSheet)
+        
+        // Option 1: Check against official lottery results
+        alert.addAction(UIAlertAction(title: "Check Against Official Results", style: .default) { _ in
+            self.checkAgainstOfficialResults()
+        })
+        
+        // Option 2: Verify ticket format
+        alert.addAction(UIAlertAction(title: "Verify Ticket Format", style: .default) { _ in
+            self.verifyTicketFormat()
+        })
+        
+        // Option 3: Verify QR/Barcode authenticity
+        alert.addAction(UIAlertAction(title: "Verify QR/Barcode Authenticity", style: .default) { _ in
+            self.verifyQRBarcodeAuthenticity()
+        })
+        
+        // Option 4: Generate verification report
+        alert.addAction(UIAlertAction(title: "Generate Verification Report", style: .default) { _ in
+            self.generateVerificationReport()
+        })
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // For iPad
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = self.view
+            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
+            popover.permittedArrowDirections = []
+        }
+        
+        present(alert, animated: true)
+    }
+    
+    private func checkAgainstOfficialResults() {
+        // Show progress
+        let progressAlert = UIAlertController(title: "Verifying...", message: "Checking against official lottery results", preferredStyle: .alert)
+        present(progressAlert, animated: true)
+        
+        // Detect game type and fetch results
+        let gameType = detectLotteryGameType()
+        
+        fetchLotteryResults { [weak self] result in
+            DispatchQueue.main.async {
+                progressAlert.dismiss(animated: true) {
+                    switch result {
+                    case .success(let lotteryResult):
+                        self?.compareWithOfficialResults(lotteryResult)
+                    case .failure(let error):
+                        self?.showVerificationAlert(title: "Verification Failed", 
+                                                 message: "Could not fetch official results: \(error.message)")
+                    }
+                }
+            }
+        }
+    }
+    
+    private func compareWithOfficialResults(_ officialResult: LotteryResult) {
+        // Parse the official results string
+        guard let resultsString = officialResult.results else {
+            showVerificationAlert(title: "Verification Failed", 
+                               message: "No official results data available.")
+            return
+        }
+        
+        // Parse the results string to extract winning numbers
+        let parsedNumbers = parseOfficialResults(resultsString)
+        
+        var matches = 0
+        var totalNumbers = 0
+        var verificationDetails: [String] = []
+        
+        // Compare each row with parsed official numbers
+        for (rowIndex, row) in lotteryNumbers.enumerated() {
+            let powerball = powerballNumbers[rowIndex]
+            
+            // Count matches in regular numbers
+            for number in row {
+                if number > 0 {
+                    totalNumbers += 1
+                    if parsedNumbers.regularNumbers.contains(number) {
+                        matches += 1
+                        verificationDetails.append("Row \(rowIndex + 1): Number \(number) matches!")
+                    }
+                }
+            }
+            
+            // Check powerball match
+            if powerball > 0 {
+                totalNumbers += 1
+                if powerball == parsedNumbers.powerball {
+                    matches += 1
+                    verificationDetails.append("Row \(rowIndex + 1): Powerball \(powerball) matches!")
+                }
+            }
+        }
+        
+        // Generate verification report
+        let matchPercentage = totalNumbers > 0 ? (matches * 100) / totalNumbers : 0
+        let message = """
+        Verification Results:
+        
+        Official Draw: \(officialResult.draw ?? "Unknown")
+        Matches: \(matches)/\(totalNumbers) numbers (\(matchPercentage)%)
+        
+        \(verificationDetails.isEmpty ? "No specific matches found." : verificationDetails.joined(separator: "\n"))
+        
+        \(matches > 0 ? "✅ Some numbers match official results!" : "❌ No matches with official results.")
+        
+        Official Numbers: \(parsedNumbers.regularNumbers.map(String.init).joined(separator: ", "))
+        Powerball: \(parsedNumbers.powerball)
+        """
+        
+        showVerificationAlert(title: "Verification Complete", message: message)
+    }
+    
+    private func parseOfficialResults(_ resultsString: String) -> (regularNumbers: [Int], powerball: Int) {
+        // This is a simplified parser - you may need to adjust based on actual API response format
+        let components = resultsString.components(separatedBy: CharacterSet(charactersIn: " ,-"))
+        var regularNumbers: [Int] = []
+        var powerball = 0
+        
+        for component in components {
+            if let number = Int(component.trimmingCharacters(in: .whitespaces)) {
+                if number <= 69 && regularNumbers.count < 5 {
+                    regularNumbers.append(number)
+                } else if number <= 26 && powerball == 0 {
+                    powerball = number
+                }
+            }
+        }
+        
+        return (regularNumbers, powerball)
+    }
+    
+    private func verifyTicketFormat() {
+        var issues: [String] = []
+        var warnings: [String] = []
+        
+        // Check number ranges
+        for (rowIndex, row) in lotteryNumbers.enumerated() {
+            for (colIndex, number) in row.enumerated() {
+                if number > 0 {
+                    if number > 69 {
+                        issues.append("Row \(rowIndex + 1), Col \(colIndex + 1): Number \(number) exceeds maximum (69)")
+                    } else if number < 1 {
+                        issues.append("Row \(rowIndex + 1), Col \(colIndex + 1): Number \(number) is below minimum (1)")
+                    }
+                }
+            }
+            
+            // Check powerball
+            let powerball = powerballNumbers[rowIndex]
+            if powerball > 0 {
+                if powerball > 26 {
+                    issues.append("Row \(rowIndex + 1): Powerball \(powerball) exceeds maximum (26)")
+                } else if powerball < 1 {
+                    issues.append("Row \(rowIndex + 1): Powerball \(powerball) is below minimum (1)")
+                }
+            }
+        }
+        
+        // Check for duplicate numbers in same row
+        for (rowIndex, row) in lotteryNumbers.enumerated() {
+            let validNumbers = row.filter { $0 > 0 }
+            let uniqueNumbers = Set(validNumbers)
+            if validNumbers.count != uniqueNumbers.count {
+                warnings.append("Row \(rowIndex + 1): Contains duplicate numbers")
+            }
+        }
+        
+        let message = """
+        Format Verification Results:
+        
+        \(issues.isEmpty ? "✅ No format issues found" : "❌ Format Issues:\n" + issues.joined(separator: "\n"))
+        
+        \(warnings.isEmpty ? "" : "⚠️ Warnings:\n" + warnings.joined(separator: "\n"))
+        
+        \(issues.isEmpty && warnings.isEmpty ? "Ticket format appears valid!" : "Please review the issues above.")
+        """
+        
+        showVerificationAlert(title: "Format Verification", message: message)
+    }
+    
+    private func verifyQRBarcodeAuthenticity() {
+        var verificationResults: [String] = []
+        var authenticityScore = 0
+        var maxScore = 0
+        
+        // 1. Check QR/Barcode format and structure
+        maxScore += 20
+        if scannedCode.contains("Lottery:") {
+            authenticityScore += 20
+            verificationResults.append("✅ Contains 'Lottery:' identifier")
+        } else {
+            verificationResults.append("❌ Missing 'Lottery:' identifier")
+        }
+        
+        // 2. Check for ticket number format
+        maxScore += 15
+        if scannedCode.contains("Ticket:") {
+            authenticityScore += 15
+            verificationResults.append("✅ Contains 'Ticket:' identifier")
+        } else {
+            verificationResults.append("❌ Missing 'Ticket:' identifier")
+        }
+        
+        // 3. Validate QR code length and complexity
+        maxScore += 10
+        if scannedCode.count > 50 {
+            authenticityScore += 10
+            verificationResults.append("✅ QR code has sufficient length (\(scannedCode.count) characters)")
+        } else {
+            verificationResults.append("❌ QR code too short (\(scannedCode.count) characters)")
+        }
+        
+        // 4. Check for proper data structure
+        maxScore += 15
+        let components = scannedCode.components(separatedBy: " ")
+        if components.count >= 3 {
+            authenticityScore += 15
+            verificationResults.append("✅ Proper data structure with \(components.count) components")
+        } else {
+            verificationResults.append("❌ Insufficient data structure (\(components.count) components)")
+        }
+        
+        // 5. Validate lottery number format in QR code
+        maxScore += 20
+        if scannedCode.contains("Lottery:") {
+            let lotteryPart = scannedCode.components(separatedBy: "Lottery: ")[1].components(separatedBy: " Ticket:")[0]
+            let numbers = lotteryPart.components(separatedBy: " | ")
+            var validNumbers = 0
+            
+            for numberString in numbers {
+                if let number = Int(numberString), number >= 1 && number <= 69 {
+                    validNumbers += 1
+                }
+            }
+            
+            if validNumbers >= 5 {
+                authenticityScore += 20
+                verificationResults.append("✅ Contains valid lottery numbers (\(validNumbers) valid)")
+            } else {
+                verificationResults.append("❌ Insufficient valid lottery numbers (\(validNumbers) valid)")
+            }
+        }
+        
+        // 6. Check for powerball numbers
+        maxScore += 10
+        if scannedCode.contains("PB:") {
+            authenticityScore += 10
+            verificationResults.append("✅ Contains powerball numbers")
+        } else {
+            verificationResults.append("❌ Missing powerball numbers")
+        }
+        
+        // 7. Validate ticket number format
+        maxScore += 10
+        if scannedCode.contains("Ticket:") {
+            let ticketPart = scannedCode.components(separatedBy: "Ticket: ")[1]
+            if ticketPart.count >= 10 && ticketPart.allSatisfy({ $0.isNumber }) {
+                authenticityScore += 10
+                verificationResults.append("✅ Valid ticket number format")
+            } else {
+                verificationResults.append("❌ Invalid ticket number format")
+            }
+        }
+        
+        // Calculate authenticity percentage
+        let authenticityPercentage = maxScore > 0 ? (authenticityScore * 100) / maxScore : 0
+        
+        // Determine authenticity level
+        let authenticityLevel: String
+        let authenticityColor: String
+        
+        if authenticityPercentage >= 90 {
+            authenticityLevel = "HIGH AUTHENTICITY"
+            authenticityColor = "🟢"
+        } else if authenticityPercentage >= 70 {
+            authenticityLevel = "MEDIUM AUTHENTICITY"
+            authenticityColor = "🟡"
+        } else if authenticityPercentage >= 50 {
+            authenticityLevel = "LOW AUTHENTICITY"
+            authenticityColor = "🟠"
+        } else {
+            authenticityLevel = "SUSPICIOUS"
+            authenticityColor = "🔴"
+        }
+        
+        let message = """
+        QR/Barcode Authenticity Verification
+        
+        \(authenticityColor) Authenticity Level: \(authenticityLevel)
+        Score: \(authenticityScore)/\(maxScore) (\(authenticityPercentage)%)
+        
+        VERIFICATION RESULTS:
+        \(verificationResults.joined(separator: "\n"))
+        
+        QR CODE CONTENT:
+        "\(scannedCode)"
+        
+        RECOMMENDATIONS:
+        \(authenticityPercentage >= 80 ? "✅ QR/Barcode appears authentic" : "⚠️ QR/Barcode shows signs of potential issues")
+        \(authenticityPercentage < 60 ? "🚨 Consider additional verification methods" : "")
+        """
+        
+        showVerificationAlert(title: "QR/Barcode Verification", message: message)
+    }
+    
+    private func generateVerificationReport() {
+        let report = generateTicketReport()
+        
+        let alert = UIAlertController(title: "Verification Report", 
+                                   message: report, 
+                                   preferredStyle: .alert)
+        
+        alert.addAction(UIAlertAction(title: "Copy Report", style: .default) { _ in
+            UIPasteboard.general.string = report
+            self.showCopyConfirmation()
+        })
+        
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        
+        present(alert, animated: true)
+    }
+    
+    private func generateTicketReport() -> String {
+        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
+        let gameType = detectLotteryGameType()
+        
+        var report = """
+        LOTTERY TICKET VERIFICATION REPORT
+        Generated: \(timestamp)
+        Game Type: \(gameType)
+        
+        TICKET NUMBERS:
+        """
+        
+        for (rowIndex, row) in lotteryNumbers.enumerated() {
+            let powerball = powerballNumbers[rowIndex]
+            let numbersString = row.map { $0 > 0 ? String($0) : "Empty" }.joined(separator: " | ")
+            report += "\nRow \(rowIndex + 1): \(numbersString) | PB: \(powerball > 0 ? String(powerball) : "Empty")"
+        }
+        
+        report += """
+        
+        
+        QR/BARCODE VERIFICATION:
+        Scanned Code: "\(scannedCode)"
+        Code Length: \(scannedCode.count) characters
+        Contains Lottery Data: \(scannedCode.contains("Lottery:") ? "Yes" : "No")
+        Contains Ticket Number: \(scannedCode.contains("Ticket:") ? "Yes" : "No")
+        
+        VERIFICATION NOTES:
+        • This is a digital verification of scanned lottery numbers
+        • QR/Barcode verification checks format and structure
+        • For official verification, check with your lottery retailer
+        • Official lottery websites provide authoritative results
+        • Physical tickets have additional security features
+        
+        SECURITY RECOMMENDATIONS:
+        • Always purchase tickets from authorized retailers
+        • Check official lottery websites for results
+        • Keep physical tickets in a safe place
+        • Verify winning tickets immediately
+        • Use QR/Barcode verification for additional authenticity checks
+        """
+        
+        return report
+    }
+    
+    private func showVerificationAlert(title: String, message: String) {
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
     private func countCurrentIssues() -> Int {
         var issueCount = 0
         
@@ -3592,6 +4013,26 @@ class QRScanResultViewController: UIViewController {
         }
         
         return issueCount
+    }
+    
+    private func updateActionButtonState() {
+        guard isLotteryTicket else { return }
+        
+        let issueCount = countCurrentIssues()
+        
+        if issueCount > 0 {
+            // Disable button when there are issues
+            actionButton.isEnabled = false
+            actionButton.backgroundColor = .systemGray4
+            actionButton.setTitleColor(.systemGray2, for: .normal)
+            actionButton.setTitle("Complete All Fields First", for: .normal)
+        } else {
+            // Enable button when all issues are resolved
+            actionButton.isEnabled = true
+            actionButton.backgroundColor = .systemBlue
+            actionButton.setTitleColor(.white, for: .normal)
+            actionButton.setTitle("Check For Winners", for: .normal)
+        }
     }
 }
 
@@ -3634,6 +4075,9 @@ extension QRScanResultViewController: UITextFieldDelegate {
         // Update toast based on current issues
         let currentIssues = countCurrentIssues()
         updateIssuesToast(count: currentIssues)
+        
+        // Update action button state
+        updateActionButtonState()
         
         // End editing
         endEditing()

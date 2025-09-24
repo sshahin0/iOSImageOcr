@@ -41,7 +41,7 @@ final class TicketNumberOCR {
     
     // MARK: - OpenAI Integration
     
-    private let openAIAPIKey = "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" // Replace with your OpenAI API key
+    private let openAIAPIKey = "" // Replace with your OpenAI API key
     private let openAIBaseURL = "https://api.openai.com/v1/chat/completions"
     
     func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {

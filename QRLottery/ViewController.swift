@@ -1406,7 +1406,7 @@ class QRScannerViewController: UIViewController {
         setupPreviewContainer()
         
         let instructionLabel = UILabel()
-        instructionLabel.text = "Position lottery ticket within the green frame (350x350)\nOnly the area inside the green box will be captured\n\nLong press 'Capture' to toggle cropping mode\nDouble tap 'Capture' to toggle padding\n\nSupports QR codes, barcodes, and printed numbers"
+        instructionLabel.text = "Position lottery ticket within the green frame"
         instructionLabel.textColor = .white
         instructionLabel.textAlignment = .center
         instructionLabel.font = UIFont.boldSystemFont(ofSize: 16)
@@ -2811,6 +2811,22 @@ class ViewController: UIViewController {
     private var selectedDrawDate: Date?
     
     // MARK: - UI Elements
+    private let scrollView: UIScrollView = {
+        let scrollView = UIScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.backgroundColor = .clear
+        scrollView.showsVerticalScrollIndicator = true
+        scrollView.alwaysBounceVertical = true
+        return scrollView
+    }()
+    
+    private let contentView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.backgroundColor = .clear
+        return view
+    }()
+    
     private let scanButton: UIButton = {
         let button = UIButton(type: .system)
         button.setTitle("Scan QR", for: .normal)
@@ -2839,7 +2855,7 @@ class ViewController: UIViewController {
     
     private let headerLabel: UILabel = {
         let label = UILabel()
-        label.text = "🎰 Lottery Scanner"
+        label.text = "Lottery Scanner"
         label.textAlignment = .center
         label.font = UIFont.systemFont(ofSize: 28, weight: .bold)
         label.textColor = .label
@@ -2862,7 +2878,7 @@ class ViewController: UIViewController {
     // MARK: - Selection UI Elements
     private let gameLabel: UILabel = {
         let label = UILabel()
-        label.text = "🎲 Select Game"
+        label.text = "Select Game"
         label.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
         label.textColor = .label
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -2885,7 +2901,7 @@ class ViewController: UIViewController {
     
     private let dateLabel: UILabel = {
         let label = UILabel()
-        label.text = "📅 Select Draw Date (Optional)"
+        label.text = "Select Draw Date (Optional)"
         label.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
         label.textColor = .label
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -2896,7 +2912,7 @@ class ViewController: UIViewController {
         let picker = UIDatePicker()
         picker.translatesAutoresizingMaskIntoConstraints = false
         picker.datePickerMode = .date
-        picker.preferredDatePickerStyle = .wheels
+        picker.preferredDatePickerStyle = .compact
         picker.backgroundColor = UIColor.systemBackground
         picker.layer.cornerRadius = 12
         picker.layer.borderWidth = 1
@@ -2985,11 +3001,14 @@ class ViewController: UIViewController {
         
         // Add views to hierarchy
         view.addSubview(backgroundGradientView)
-        view.addSubview(headerLabel)
-        view.addSubview(selectionContainerView)
+        view.addSubview(scrollView)
+        scrollView.addSubview(contentView)
+        
+        contentView.addSubview(headerLabel)
+        contentView.addSubview(selectionContainerView)
         selectionContainerView.addSubview(selectionStackView)
-        view.addSubview(scanButton)
-        view.addSubview(instructionLabel)
+        contentView.addSubview(scanButton)
+        contentView.addSubview(instructionLabel)
         
         scanButton.addTarget(self, action: #selector(scanButtonTapped), for: .touchUpInside)
         
@@ -3039,15 +3058,28 @@ class ViewController: UIViewController {
             backgroundGradientView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backgroundGradientView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             
+            // Scroll View
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            
+            // Content View
+            contentView.topAnchor.constraint(equalTo: scrollView.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: scrollView.bottomAnchor),
+            contentView.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
+            
             // Header Label
-            headerLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            headerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            headerLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            headerLabel.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 20),
+            headerLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            headerLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             
             // Selection Container
             selectionContainerView.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 30),
-            selectionContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            selectionContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            selectionContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            selectionContainerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             
             // Selection Stack View
             selectionStackView.topAnchor.constraint(equalTo: selectionContainerView.topAnchor, constant: 24),
@@ -3056,16 +3088,17 @@ class ViewController: UIViewController {
             selectionStackView.bottomAnchor.constraint(equalTo: selectionContainerView.bottomAnchor, constant: -24),
             
             // Scan Button
-            scanButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            scanButton.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             scanButton.topAnchor.constraint(equalTo: selectionContainerView.bottomAnchor, constant: 40),
             scanButton.widthAnchor.constraint(equalToConstant: 240),
             scanButton.heightAnchor.constraint(equalToConstant: 56),
             
             // Instruction Label
-            instructionLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            instructionLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             instructionLabel.topAnchor.constraint(equalTo: scanButton.bottomAnchor, constant: 24),
-            instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+            instructionLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            instructionLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            instructionLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
         ])
     }
     
@@ -3764,25 +3797,8 @@ class QRScanResultViewController: UIViewController {
                 return
             }
             
-            // Show lottery options
-            let alert = UIAlertController(title: "Lottery Options", 
-                                       message: "What would you like to do?", 
-                                       preferredStyle: .actionSheet)
-            
-            alert.addAction(UIAlertAction(title: "Check for Winners", style: .default) { _ in
-                self.checkForWinners()
-            })
-            
-            
-            alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-            
-            // For iPad
-            if let popover = alert.popoverPresentationController {
-                popover.sourceView = actionButton
-                popover.sourceRect = actionButton.bounds
-            }
-            
-            present(alert, animated: true)
+            // Check for winners directly
+            checkForWinners()
         } else {
             // Copy to clipboard
             UIPasteboard.general.string = scannedCode
@@ -3977,20 +3993,14 @@ class QRScanResultViewController: UIViewController {
     
     
     private func checkForWinners() {
-        // Show loading alert
-        let alert = UIAlertController(title: "Checking Winners", message: "Checking your lottery numbers against winning numbers...", preferredStyle: .alert)
-        present(alert, animated: true)
-        
-        // Call the lottery results API
+        // Call the lottery results API directly without loading dialog
         fetchLotteryResults { [weak self] result in
             DispatchQueue.main.async {
-            alert.dismiss(animated: true) {
-                    switch result {
-                    case .success(let lotteryResult):
-                        self?.showWinningResults(with: lotteryResult)
-                    case .failure(let error):
-                        self?.showErrorAlert(error: error)
-                    }
+                switch result {
+                case .success(let lotteryResult):
+                    self?.showWinningResults(with: lotteryResult)
+                case .failure(let error):
+                    self?.showErrorAlert(error: error)
                 }
             }
         }

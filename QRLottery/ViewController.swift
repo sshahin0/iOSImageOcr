@@ -3130,6 +3130,9 @@ class ViewController: UIViewController {
 // MARK: - QRScanResultViewController
 class QRScanResultViewController: UIViewController {
     
+    // Selected game from the main screen
+    var selectedGame: LotteryGame?
+    
     private let scrollView: UIScrollView = {
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -3754,15 +3757,22 @@ class QRScanResultViewController: UIViewController {
     // MARK: - Network Service
     
     private func fetchLotteryResults(completion: @escaping (Result<LotteryResult, LotteryAPIError>) -> Void) {
-        // Detect the lottery game type from the scanned numbers
-        let gameType = detectLotteryGameType()
+        // Use the selected game from the picker
+        guard let selectedGame = selectedGame else {
+            completion(.failure(LotteryAPIError(message: "No game selected", code: nil)))
+            return
+        }
         
-        // Build URL with required parameters
+        let gameCode = selectedGame.code
+        
+        // Build URL with required parameters according to magayo API documentation
+        // https://www.magayo.com/lottery-docs/api/get-draw-results/
         var components = URLComponents(string: "https://www.magayo.com/api/results.php")!
         components.queryItems = [
             URLQueryItem(name: "api_key", value: apiKey),
-            URLQueryItem(name: "game", value: gameType),
+            URLQueryItem(name: "game", value: gameCode),
             URLQueryItem(name: "format", value: "json")
+            // Note: 'draw' parameter is optional - if not specified, returns latest draw results
         ]
         
         guard let url = components.url else {
@@ -3770,36 +3780,92 @@ class QRScanResultViewController: UIViewController {
             return
         }
         
+        // Print the final API URL for debugging
+        print("🎯 MAGAYO API CALL:")
+        print("   Game: \(selectedGame.name)")
+        print("   Game Code: \(gameCode)")
+        print("   URL: \(url.absoluteString)")
+        print("   API Key: \(apiKey.prefix(8))...")
+        print("   Full API Request: GET \(url.absoluteString)")
+        
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
+                print("❌ MAGAYO API Network Error: \(error.localizedDescription)")
                 completion(.failure(LotteryAPIError(message: "Network error: \(error.localizedDescription)", code: nil)))
                 return
             }
             
             guard let data = data else {
+                print("❌ MAGAYO API: No data received")
                 completion(.failure(LotteryAPIError(message: "No data received", code: nil)))
                 return
+            }
+            
+            // Print raw response for debugging
+            if let responseString = String(data: data, encoding: .utf8) {
+                print("📥 MAGAYO API Raw Response:")
+                print(responseString)
             }
             
             do {
                 let lotteryResult = try JSONDecoder().decode(LotteryResult.self, from: data)
                 
-                // Check if there's an API error
+                print("✅ MAGAYO API Response Parsed Successfully:")
+                print("   Error Code: \(lotteryResult.error ?? 0)")
+                print("   Draw Date: \(lotteryResult.draw ?? "N/A")")
+                print("   Results: \(lotteryResult.results ?? "N/A")")
+                
+                // Check if there's an API error according to magayo documentation
                 if let errorCode = lotteryResult.error, errorCode != 0 {
                     let errorMessage = self.getErrorMessage(for: errorCode)
+                    print("❌ MAGAYO API Error \(errorCode): \(errorMessage)")
                     completion(.failure(LotteryAPIError(message: errorMessage, code: errorCode)))
                     return
                 }
                 
                 completion(.success(lotteryResult))
             } catch {
+                print("❌ MAGAYO API JSON Parse Error: \(error.localizedDescription)")
                 completion(.failure(LotteryAPIError(message: "Failed to parse response: \(error.localizedDescription)", code: nil)))
             }
         }.resume()
+    }
+    
+    // MARK: - Error Handling
+    
+    /// Get error message for magayo API error codes according to their documentation
+    /// https://www.magayo.com/lottery-docs/api/get-draw-results/
+    private func getErrorMessage(for errorCode: Int) -> String {
+        switch errorCode {
+        case 0:
+            return "No error"
+        case 100:
+            return "API key not provided"
+        case 101:
+            return "Invalid API key"
+        case 102:
+            return "API key not found"
+        case 200:
+            return "Game not provided"
+        case 201:
+            return "Invalid game"
+        case 202:
+            return "Game not found"
+        case 300:
+            return "Account suspended - You have violated terms of use"
+        case 303:
+            return "API limit reached - Consider upgrading your API plan"
+        case 400:
+            return "Invalid draw date - Date format must be YYYY-MM-DD"
+        case 401:
+            return "No draw results - There is no draw on the specified date"
+        default:
+            return "Unknown error (Code: \(errorCode))"
+        }
     }
     
     // MARK: - Game Detection
@@ -3834,34 +3900,6 @@ class QRScanResultViewController: UIViewController {
         return "us_mega_millions"
     }
     
-    // MARK: - Error Handling
-    
-    private func getErrorMessage(for errorCode: Int) -> String {
-        switch errorCode {
-        case 100:
-            return "API key not provided. Please configure your API key."
-        case 101:
-            return "Invalid API key. Please check your API key configuration."
-        case 102:
-            return "API key not found. Please check your API key configuration."
-        case 200:
-            return "Game not provided. Please check game detection logic."
-        case 201:
-            return "Invalid game. Please check game detection logic."
-        case 202:
-            return "Game not found. Please check game detection logic."
-        case 300:
-            return "Account suspended. Please contact magayo support."
-        case 303:
-            return "API limit reached. Consider upgrading your API plan."
-        case 400:
-            return "Invalid draw date format."
-        case 401:
-            return "No draw results found for the specified date."
-        default:
-            return "API Error: \(errorCode)"
-        }
-    }
     
     private func checkForWinners() {
         // Show loading alert
@@ -4330,6 +4368,7 @@ extension ViewController: QRScannerDelegate {
             resultVC.scannedCode = code
             resultVC.isLotteryTicket = code.contains("Lottery:")
             resultVC.scannedImage = image
+            resultVC.selectedGame = self.selectedGame // Pass the selected game
             resultVC.modalPresentationStyle = .fullScreen
             
             self.present(resultVC, animated: true)

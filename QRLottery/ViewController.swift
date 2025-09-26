@@ -2808,6 +2808,7 @@ class ViewController: UIViewController {
     // MARK: - Lottery Data
     private var games: [LotteryGame] = []
     private var selectedGame: LotteryGame?
+    private var selectedDrawDate: Date?
     
     // MARK: - UI Elements
     private let scanButton: UIButton = {
@@ -2849,7 +2850,7 @@ class ViewController: UIViewController {
     
     private let instructionLabel: UILabel = {
         let label = UILabel()
-        label.text = "Select a lottery game to scan tickets"
+        label.text = "Select a lottery game and draw date to scan tickets"
         label.textAlignment = .center
         label.font = UIFont.systemFont(ofSize: 16, weight: .medium)
         label.textColor = .secondaryLabel
@@ -2880,6 +2881,46 @@ class ViewController: UIViewController {
         picker.layer.shadowRadius = 4
         picker.layer.shadowOpacity = 0.1
         return picker
+    }()
+    
+    private let dateLabel: UILabel = {
+        let label = UILabel()
+        label.text = "📅 Select Draw Date (Optional)"
+        label.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        label.textColor = .label
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+    
+    private let datePicker: UIDatePicker = {
+        let picker = UIDatePicker()
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.datePickerMode = .date
+        picker.preferredDatePickerStyle = .wheels
+        picker.backgroundColor = UIColor.systemBackground
+        picker.layer.cornerRadius = 12
+        picker.layer.borderWidth = 1
+        picker.layer.borderColor = UIColor.separator.cgColor
+        picker.layer.shadowColor = UIColor.black.cgColor
+        picker.layer.shadowOffset = CGSize(width: 0, height: 2)
+        picker.layer.shadowRadius = 4
+        picker.layer.shadowOpacity = 0.1
+        // Set default to today
+        picker.date = Date()
+        // Set maximum date to today (can't select future dates)
+        picker.maximumDate = Date()
+        return picker
+    }()
+    
+    private let latestDrawButton: UIButton = {
+        let button = UIButton(type: .system)
+        button.setTitle("Use Latest Draw", for: .normal)
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        button.setTitleColor(.systemBlue, for: .normal)
+        button.backgroundColor = UIColor.systemGray6
+        button.layer.cornerRadius = 8
+        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
     }()
     
     private let selectionStackView: UIStackView = {
@@ -2974,10 +3015,20 @@ class ViewController: UIViewController {
         // Add elements to stack view
         selectionStackView.addArrangedSubview(gameLabel)
         selectionStackView.addArrangedSubview(gamePicker)
+        selectionStackView.addArrangedSubview(dateLabel)
+        selectionStackView.addArrangedSubview(datePicker)
+        selectionStackView.addArrangedSubview(latestDrawButton)
         
         // Setup picker delegates
         gamePicker.delegate = self
         gamePicker.dataSource = self
+        
+        // Setup date picker target
+        datePicker.addTarget(self, action: #selector(datePickerChanged), for: .valueChanged)
+        latestDrawButton.addTarget(self, action: #selector(latestDrawButtonTapped), for: .touchUpInside)
+        
+        // Set initial date
+        selectedDrawDate = Date()
     }
     
     private func setupConstraints() {
@@ -3020,7 +3071,7 @@ class ViewController: UIViewController {
     
     private func generateInitialTicket() {
         // Don't generate ticket automatically on load
-        instructionLabel.text = "Select a lottery game to scan tickets"
+        instructionLabel.text = "Select a lottery game and draw date to scan tickets"
         instructionLabel.textColor = .secondaryLabel
     }
     
@@ -3132,6 +3183,9 @@ class QRScanResultViewController: UIViewController {
     
     // Selected game from the main screen
     var selectedGame: LotteryGame?
+    
+    // Selected draw date from the main screen (nil means use latest draw)
+    var selectedDrawDate: Date?
     
     private let scrollView: UIScrollView = {
         let scrollView = UIScrollView()
@@ -3768,12 +3822,20 @@ class QRScanResultViewController: UIViewController {
         // Build URL with required parameters according to magayo API documentation
         // https://www.magayo.com/lottery-docs/api/get-draw-results/
         var components = URLComponents(string: "https://www.magayo.com/api/results.php")!
-        components.queryItems = [
+        
+        var queryItems = [
             URLQueryItem(name: "api_key", value: apiKey),
             URLQueryItem(name: "game", value: gameCode),
             URLQueryItem(name: "format", value: "json")
-            // Note: 'draw' parameter is optional - if not specified, returns latest draw results
         ]
+        
+        // Add draw date if specified (optional parameter)
+        if let drawDate = selectedDrawDate {
+            let dateString = formatDateForAPI(drawDate)
+            queryItems.append(URLQueryItem(name: "draw", value: dateString))
+        }
+        
+        components.queryItems = queryItems
         
         guard let url = components.url else {
             completion(.failure(LotteryAPIError(message: "Invalid URL", code: nil)))
@@ -3784,6 +3846,11 @@ class QRScanResultViewController: UIViewController {
         print("🎯 MAGAYO API CALL:")
         print("   Game: \(selectedGame.name)")
         print("   Game Code: \(gameCode)")
+        if let drawDate = selectedDrawDate {
+            print("   Draw Date: \(formatDateForAPI(drawDate))")
+        } else {
+            print("   Draw Date: Latest (not specified)")
+        }
         print("   URL: \(url.absoluteString)")
         print("   API Key: \(apiKey.prefix(8))...")
         print("   Full API Request: GET \(url.absoluteString)")
@@ -3833,6 +3900,14 @@ class QRScanResultViewController: UIViewController {
                 completion(.failure(LotteryAPIError(message: "Failed to parse response: \(error.localizedDescription)", code: nil)))
             }
         }.resume()
+    }
+    
+    // MARK: - Date Formatting
+    
+    private func formatDateForAPI(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
     
     // MARK: - Error Handling
@@ -4369,6 +4444,7 @@ extension ViewController: QRScannerDelegate {
             resultVC.isLotteryTicket = code.contains("Lottery:")
             resultVC.scannedImage = image
             resultVC.selectedGame = self.selectedGame // Pass the selected game
+            resultVC.selectedDrawDate = self.selectedDrawDate // Pass the selected draw date
             resultVC.modalPresentationStyle = .fullScreen
             
             self.present(resultVC, animated: true)
@@ -4385,6 +4461,34 @@ extension ViewController: QRScannerDelegate {
 extension ViewController {
     @objc private func scanButtonTapped() {
         showScanQRAlert()
+    }
+    
+    @objc private func datePickerChanged() {
+        selectedDrawDate = datePicker.date
+        print("📅 Selected draw date: \(formatDateForAPI(selectedDrawDate!))")
+    }
+    
+    @objc private func latestDrawButtonTapped() {
+        selectedDrawDate = nil // nil means use latest draw
+        datePicker.date = Date()
+        print("📅 Using latest draw (no specific date)")
+        
+        // Show visual feedback
+        UIView.animate(withDuration: 0.2, animations: {
+            self.latestDrawButton.backgroundColor = UIColor.systemGreen
+            self.latestDrawButton.setTitle("✓ Latest Draw Selected", for: .normal)
+        }) { _ in
+            UIView.animate(withDuration: 0.2, delay: 1.0) {
+                self.latestDrawButton.backgroundColor = UIColor.systemGray6
+                self.latestDrawButton.setTitle("Use Latest Draw", for: .normal)
+            }
+        }
+    }
+    
+    private func formatDateForAPI(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
 

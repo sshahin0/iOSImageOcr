@@ -1215,6 +1215,7 @@ protocol QRScannerDelegate: AnyObject {
 class QRScannerViewController: UIViewController {
     
     weak var delegate: QRScannerDelegate?
+    var selectedGame: LotteryGame?
     
     private var captureSession: AVCaptureSession!
     private var previewLayer: AVCaptureVideoPreviewLayer!
@@ -2796,33 +2797,115 @@ extension QRScannerViewController: AVCapturePhotoCaptureDelegate {
 }
 
 // MARK: - Main ViewController
+// MARK: - Lottery Data Structures
+struct LotteryGame {
+    let name: String
+    let code: String
+}
+
 class ViewController: UIViewController {
+    
+    // MARK: - Lottery Data
+    private var games: [LotteryGame] = []
+    private var selectedGame: LotteryGame?
     
     // MARK: - UI Elements
     private let scanButton: UIButton = {
         let button = UIButton(type: .system)
         button.setTitle("Scan QR", for: .normal)
-        button.titleLabel?.font = UIFont.boldSystemFont(ofSize: 20)
-        button.backgroundColor = .systemGreen
+        button.titleLabel?.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        button.backgroundColor = UIColor.systemBlue
         button.setTitleColor(.white, for: .normal)
-        button.layer.cornerRadius = 12
-        button.layer.borderWidth = 2
-        button.layer.borderColor = UIColor.systemGreen.cgColor
+        button.layer.cornerRadius = 16
+        button.layer.shadowColor = UIColor.systemBlue.cgColor
+        button.layer.shadowOffset = CGSize(width: 0, height: 4)
+        button.layer.shadowRadius = 8
+        button.layer.shadowOpacity = 0.3
         button.translatesAutoresizingMaskIntoConstraints = false
         button.isUserInteractionEnabled = true
         button.isEnabled = true
+        
+        // Add gradient background
+        let gradientLayer = CAGradientLayer()
+        gradientLayer.colors = [UIColor.systemBlue.cgColor, UIColor.systemIndigo.cgColor]
+        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+        gradientLayer.cornerRadius = 16
+        button.layer.insertSublayer(gradientLayer, at: 0)
+        
         return button
+    }()
+    
+    private let headerLabel: UILabel = {
+        let label = UILabel()
+        label.text = "🎰 Lottery Scanner"
+        label.textAlignment = .center
+        label.font = UIFont.systemFont(ofSize: 28, weight: .bold)
+        label.textColor = .label
+        label.numberOfLines = 1
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
     }()
     
     private let instructionLabel: UILabel = {
         let label = UILabel()
-        label.text = "Scan lottery ticket QR codes to view results"
+        label.text = "Select a lottery game to scan tickets"
         label.textAlignment = .center
-        label.font = UIFont.systemFont(ofSize: 16)
-        label.textColor = .systemGray
+        label.font = UIFont.systemFont(ofSize: 16, weight: .medium)
+        label.textColor = .secondaryLabel
         label.numberOfLines = 0
         label.translatesAutoresizingMaskIntoConstraints = false
         return label
+    }()
+    
+    // MARK: - Selection UI Elements
+    private let gameLabel: UILabel = {
+        let label = UILabel()
+        label.text = "🎲 Select Game"
+        label.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
+        label.textColor = .label
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+    
+    private let gamePicker: UIPickerView = {
+        let picker = UIPickerView()
+        picker.translatesAutoresizingMaskIntoConstraints = false
+        picker.backgroundColor = UIColor.systemBackground
+        picker.layer.cornerRadius = 12
+        picker.layer.borderWidth = 1
+        picker.layer.borderColor = UIColor.separator.cgColor
+        picker.layer.shadowColor = UIColor.black.cgColor
+        picker.layer.shadowOffset = CGSize(width: 0, height: 2)
+        picker.layer.shadowRadius = 4
+        picker.layer.shadowOpacity = 0.1
+        return picker
+    }()
+    
+    private let selectionStackView: UIStackView = {
+        let stackView = UIStackView()
+        stackView.axis = .vertical
+        stackView.spacing = 24
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        return stackView
+    }()
+    
+    private let selectionContainerView: UIView = {
+        let view = UIView()
+        view.backgroundColor = UIColor.systemBackground
+        view.layer.cornerRadius = 20
+        view.layer.shadowColor = UIColor.black.cgColor
+        view.layer.shadowOffset = CGSize(width: 0, height: 8)
+        view.layer.shadowRadius = 16
+        view.layer.shadowOpacity = 0.1
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }()
+    
+    private let backgroundGradientView: UIView = {
+        let view = UIView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
     }()
     
     // MARK: - Lifecycle
@@ -2837,28 +2920,99 @@ class ViewController: UIViewController {
         super.viewDidAppear(animated)
     }
     
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        
+        // Update gradient layer frame
+        if let gradientLayer = backgroundGradientView.layer.sublayers?.first as? CAGradientLayer {
+            gradientLayer.frame = backgroundGradientView.bounds
+        }
+        
+        // Update scan button gradient
+        if let gradientLayer = scanButton.layer.sublayers?.first as? CAGradientLayer {
+            gradientLayer.frame = scanButton.bounds
+        }
+    }
+    
     // MARK: - UI Setup
     private func setupUI() {
-        view.backgroundColor = .systemBackground
+        setupBackgroundGradient()
         title = "Lottery QR Scanner"
         
+        // Setup selection UI
+        setupSelectionUI()
+        
+        // Add views to hierarchy
+        view.addSubview(backgroundGradientView)
+        view.addSubview(headerLabel)
+        view.addSubview(selectionContainerView)
+        selectionContainerView.addSubview(selectionStackView)
         view.addSubview(scanButton)
         view.addSubview(instructionLabel)
         
         scanButton.addTarget(self, action: #selector(scanButtonTapped), for: .touchUpInside)
+        
+        // Initially hide scan button
+        scanButton.isHidden = true
+        
+        // Load lottery data
+        loadLotteryData()
+    }
+    
+    private func setupBackgroundGradient() {
+        let gradientLayer = CAGradientLayer()
+        gradientLayer.colors = [
+            UIColor.systemBackground.cgColor,
+            UIColor.systemGray6.cgColor
+        ]
+        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+        backgroundGradientView.layer.insertSublayer(gradientLayer, at: 0)
+    }
+    
+    private func setupSelectionUI() {
+        // Add elements to stack view
+        selectionStackView.addArrangedSubview(gameLabel)
+        selectionStackView.addArrangedSubview(gamePicker)
+        
+        // Setup picker delegates
+        gamePicker.delegate = self
+        gamePicker.dataSource = self
     }
     
     private func setupConstraints() {
         NSLayoutConstraint.activate([
+            // Background Gradient
+            backgroundGradientView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundGradientView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundGradientView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backgroundGradientView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            
+            // Header Label
+            headerLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            headerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            headerLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            // Selection Container
+            selectionContainerView.topAnchor.constraint(equalTo: headerLabel.bottomAnchor, constant: 30),
+            selectionContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            selectionContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            
+            // Selection Stack View
+            selectionStackView.topAnchor.constraint(equalTo: selectionContainerView.topAnchor, constant: 24),
+            selectionStackView.leadingAnchor.constraint(equalTo: selectionContainerView.leadingAnchor, constant: 20),
+            selectionStackView.trailingAnchor.constraint(equalTo: selectionContainerView.trailingAnchor, constant: -20),
+            selectionStackView.bottomAnchor.constraint(equalTo: selectionContainerView.bottomAnchor, constant: -24),
+            
             // Scan Button
             scanButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            scanButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            scanButton.widthAnchor.constraint(equalToConstant: 200),
-            scanButton.heightAnchor.constraint(equalToConstant: 50),
+            scanButton.topAnchor.constraint(equalTo: selectionContainerView.bottomAnchor, constant: 40),
+            scanButton.widthAnchor.constraint(equalToConstant: 240),
+            scanButton.heightAnchor.constraint(equalToConstant: 56),
             
             // Instruction Label
             instructionLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            instructionLabel.topAnchor.constraint(equalTo: scanButton.bottomAnchor, constant: 30),
+            instructionLabel.topAnchor.constraint(equalTo: scanButton.bottomAnchor, constant: 24),
             instructionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             instructionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
         ])
@@ -2866,8 +3020,73 @@ class ViewController: UIViewController {
     
     private func generateInitialTicket() {
         // Don't generate ticket automatically on load
-        instructionLabel.text = "Scan lottery ticket QR codes to view results"
-        instructionLabel.textColor = .systemGray
+        instructionLabel.text = "Select a lottery game to scan tickets"
+        instructionLabel.textColor = .secondaryLabel
+    }
+    
+    // MARK: - Lottery Data Loading
+    private func loadLotteryData() {
+        // Load popular lottery games based on magayo API documentation
+        games = [
+            // Multi-state US games
+            LotteryGame(name: "Mega Millions", code: "us_mega_millions"),
+            LotteryGame(name: "Powerball", code: "us_powerball"),
+            LotteryGame(name: "Cash4Life", code: "us_cash4life"),
+            LotteryGame(name: "Lotto America", code: "us_lotto_america"),
+            LotteryGame(name: "Lucky for Life", code: "us_lucky_life"),
+            LotteryGame(name: "Powerball Double Play", code: "us_powerball_double"),
+            
+            // State-specific games
+            LotteryGame(name: "California Fantasy 5", code: "us_ca_fantasy"),
+            LotteryGame(name: "California SuperLotto Plus", code: "us_ca_lotto"),
+            LotteryGame(name: "Florida Fantasy 5", code: "us_fl_fantasy"),
+            LotteryGame(name: "Florida Lotto", code: "us_fl_lotto"),
+            LotteryGame(name: "New York Lotto", code: "us_ny_lotto"),
+            LotteryGame(name: "Texas Lotto", code: "us_tx_lotto"),
+            LotteryGame(name: "Arizona Fantasy 5", code: "us_az_fantasy"),
+            
+            // International games
+            LotteryGame(name: "UK Lotto", code: "uk_lotto"),
+            LotteryGame(name: "EuroMillions", code: "uk_euromillions"),
+            LotteryGame(name: "Thunderball", code: "uk_thunderball"),
+            LotteryGame(name: "Canada Lotto 6/49", code: "ca_on_lotto649"),
+            LotteryGame(name: "Canada Lotto Max", code: "ca_on_lottomax")
+        ]
+        
+        // Reload picker view
+        gamePicker.reloadAllComponents()
+    }
+    
+    private func updateScanButtonVisibility() {
+        let hasValidSelection = selectedGame != nil
+        
+        print("DEBUG: updateScanButtonVisibility - Game: \(selectedGame?.name ?? "nil")")
+        print("DEBUG: hasValidSelection: \(hasValidSelection), scanButton.isHidden: \(scanButton.isHidden)")
+        
+        if hasValidSelection {
+            let gameName = selectedGame?.name ?? ""
+            scanButton.setTitle("🎯 Scan \(gameName)", for: .normal)
+            
+            // Animate button appearance
+            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.5, options: [.curveEaseInOut], animations: {
+                self.scanButton.isHidden = false
+                self.scanButton.alpha = 1.0
+                self.scanButton.transform = CGAffineTransform(scaleX: 1.05, y: 1.05)
+            }) { _ in
+                UIView.animate(withDuration: 0.2) {
+                    self.scanButton.transform = .identity
+                }
+            }
+        } else {
+            // Animate button disappearance
+            UIView.animate(withDuration: 0.2, animations: {
+                self.scanButton.alpha = 0.0
+                self.scanButton.transform = CGAffineTransform(scaleX: 0.95, y: 0.95)
+            }) { _ in
+                self.scanButton.isHidden = true
+                self.scanButton.transform = .identity
+            }
+        }
     }
     
     private func showScanQRAlert() {
@@ -2895,6 +3114,7 @@ class ViewController: UIViewController {
     private func presentQRScanner() {
         let scannerVC = QRScannerViewController()
         scannerVC.delegate = self
+        scannerVC.selectedGame = selectedGame
         scannerVC.modalPresentationStyle = .fullScreen
         present(scannerVC, animated: true)
     }
@@ -4126,6 +4346,45 @@ extension ViewController: QRScannerDelegate {
 extension ViewController {
     @objc private func scanButtonTapped() {
         showScanQRAlert()
+    }
+}
+
+// MARK: - UIPickerViewDataSource & UIPickerViewDelegate
+extension ViewController: UIPickerViewDataSource, UIPickerViewDelegate {
+    
+    func numberOfComponents(in pickerView: UIPickerView) -> Int {
+        return 1
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, numberOfRowsInComponent component: Int) -> Int {
+        switch pickerView {
+        case gamePicker:
+            return games.count
+        default:
+            return 0
+        }
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, titleForRow row: Int, forComponent component: Int) -> String? {
+        switch pickerView {
+        case gamePicker:
+            return games[row].name
+        default:
+            return nil
+        }
+    }
+    
+    func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {
+        switch pickerView {
+        case gamePicker:
+            selectedGame = games[row]
+            
+        default:
+            break
+        }
+        
+        // Update scan button visibility
+        updateScanButtonVisibility()
     }
 }
 

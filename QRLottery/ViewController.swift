@@ -44,9 +44,11 @@ final class TicketNumberOCR {
     private let openAIAPIKey = APIKeys.openAIAPIKey
     private let openAIBaseURL = APIKeys.openAIBaseURL
     
-    func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+    // MARK: - Row Count Detection
+    
+    private func detectRowCount(from image: UIImage, completion: @escaping (Result<Int, Error>) -> Void) {
         guard let imageData = image.jpegData(compressionQuality: 0.8) else {
-            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not convert image to JPEG"])))
             return
         }
         
@@ -61,27 +63,18 @@ final class TicketNumberOCR {
                         [
                             "type": "text",
                             "text": """
-                            Analyze this lottery ticket image and extract all the lottery numbers. 
-                            
-                            Please identify:
-                            1. The lottery game type (e.g., Mega Millions, Powerball, EuroMillions, etc.)
-                            2. All rows of numbers (typically 5 rows labeled A, B, C, D, E)
-                            3. Regular numbers (usually 5 numbers per row)
-                            4. Special numbers (Mega Ball, Powerball, Euro Ball, etc.)
-                            
-                            Return the data in this exact JSON format:
-                            {
-                                "game_type": "detected_game_name",
-                                "rows": [
-                                    {
-                                        "row_label": "A",
-                                        "regular_numbers": [1, 2, 3, 4, 5],
-                                        "special_number": 25
-                                    }
-                                ]
-                            }
-                            
-                            If you cannot clearly see or parse a number, return -1 in that exact position. Only return integers. Keep array lengths; do not omit elements.
+                               I need to count the number of lottery number rows on this ticket.
+                               Look for rows labeled A, B, C, D, E, F, G, H, I, J (or similar).
+                               Count ONLY the rows that contain lottery numbers (5 regular numbers + 1 special number).
+                               
+                               Return ONLY a single number representing the total count of lottery rows.
+                               Example responses: 1, 5, 10, etc.
+                               
+                               Rules:
+                               - Count from top to bottom of the ticket
+                               - Look for row labels (A, B, C, D, E, F, G, H, I, J)
+                               - Only count rows with lottery numbers
+                               - Return just the number, no other text
                             """
                         ],
                         [
@@ -93,7 +86,7 @@ final class TicketNumberOCR {
                     ]
                 ]
             ],
-            "max_tokens": 1000
+            "max_tokens": 50
         ]
         
         guard let url = URL(string: openAIBaseURL) else {
@@ -113,8 +106,11 @@ final class TicketNumberOCR {
             return
         }
         
+        print("OpenAI Row Count Detection - Starting request...")
+        
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
+                print("OpenAI Row Count Detection Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
@@ -131,8 +127,17 @@ final class TicketNumberOCR {
                    let message = firstChoice["message"] as? [String: Any],
                    let content = message["content"] as? String {
                     
-                    // Parse the OpenAI response
-                    self.parseOpenAIResponse(content: content, completion: completion)
+                    print("OpenAI Row Count Response: '\(content)'")
+                    
+                    // Extract number from response
+                    let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if let rowCount = Int(trimmedContent) {
+                        print("OpenAI Row Count Detection - Found \(rowCount) rows")
+                        completion(.success(rowCount))
+                    } else {
+                        print("OpenAI Row Count Detection - Could not parse number from: '\(trimmedContent)'")
+                        completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Could not parse row count"])))
+                    }
                 } else {
                     completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
                 }
@@ -142,18 +147,302 @@ final class TicketNumberOCR {
         }.resume()
     }
     
+    private func scanWithSpecificRowCount(image: UIImage, expectedRowCount: Int, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
+            return
+        }
+        
+        let base64Image = imageData.base64EncodedString()
+        
+        // Debug logging
+        let key = APIKeys.openAIAPIKey
+        print("OpenAI key prefix:", key.prefix(7), "len:", key.count)
+        precondition(!key.contains("YOUR_"), "APIKeys.swift still has placeholder")
+        
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o",
+            "response_format": ["type": "json_object"],
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": """
+                               I need to extract lottery numbers from a legitimate lottery ticket for verification purposes.
+                               This is for a personal lottery ticket checking app to verify winning numbers.
+                               
+                               IMPORTANT: This ticket has exactly \(expectedRowCount) rows of lottery numbers.
+                               You must extract ALL \(expectedRowCount) rows, no more, no less.
+                               
+                               Please analyze this lottery ticket image and extract ALL lottery numbers from EVERY row.
+                               This ticket has \(expectedRowCount) rows labeled A, B, C, D, E, F, G, H, I, J (or similar).
+                               You must scan the ENTIRE ticket image and return exactly \(expectedRowCount) rows.
+                               
+                               Return ONLY a JSON array of rows with this exact schema:
+                               [{"numbers":[n,n,n,n,n], "special": n}] with no prose, no code fences.
+                               
+                               Example for a 10-row ticket:
+                               [
+                                 {"numbers":[10,36,47,63,74], "special": 4},
+                                 {"numbers":[11,23,50,60,71], "special": 9},
+                                 {"numbers":[44,47,53,62,74], "special": 8},
+                                 {"numbers":[4,24,30,31,49], "special": 4},
+                                 {"numbers":[1,10,29,49,53], "special": 14},
+                                 {"numbers":[12,20,21,24,65], "special": 12},
+                                 {"numbers":[15,17,43,51,61], "special": 11},
+                                 {"numbers":[8,10,15,63,69], "special": 1},
+                                 {"numbers":[5,7,12,55,63], "special": 9},
+                                 {"numbers":[41,42,44,50,69], "special": 1}
+                               ]
+                               
+                               Rules:
+                               - Extract numbers from ALL \(expectedRowCount) rows visible in the image
+                               - Look for rows labeled A, B, C, D, E, F, G, H, I, J or similar
+                               - If you cannot read a number, use -1
+                               - Return exactly \(expectedRowCount) rows, no more, no less
+                               - Each row should have 5 regular numbers and 1 special number
+                               - Regular numbers: 1-69, Special numbers: 1-26
+                               - IMPORTANT: Scan the entire ticket image, not just the first row
+                               - CRITICAL: Look for ALL \(expectedRowCount) rows from top to bottom of the ticket
+                               - The ticket has exactly \(expectedRowCount) rows - extract EVERY single row you can see
+                            """
+                        ],
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/jpeg;base64,\(base64Image)"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "max_tokens": 3000
+        ]
+        
+        guard let url = URL(string: openAIBaseURL) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        let session = URLSession(configuration: config)
+        session.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "OpenAI", code: -3, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            // Debug logging
+            if let http = response as? HTTPURLResponse {
+                print("OpenAI HTTP status:", http.statusCode)
+                print("OpenAI headers:", http.allHeaderFields)
+            }
+            if let body = String(data: data, encoding: .utf8) {
+                print("OpenAI RAW response:\n\(body)")
+            }
+            
+            do {
+                let top = try JSONSerialization.jsonObject(with: data)
+                print("OpenAI JSON (top-level):", top)
+                if let json = top as? [String: Any],
+                   let choices = json["choices"] as? [[String: Any]],
+                   let firstChoice = choices.first,
+                   let message = firstChoice["message"] as? [String: Any] {
+                    
+                    // Check for refusal first
+                    if let refusal = message["refusal"] as? String, !refusal.isEmpty {
+                        print("OpenAI refused to process: \(refusal)")
+                        completion(.failure(NSError(domain: "OpenAI", code: -7, userInfo: [NSLocalizedDescriptionKey: "OpenAI refused to process the image: \(refusal)"])))
+                        return
+                    }
+                    
+                    if let content = message["content"] as? String {
+                        print("OpenAI message.content:\n\(content)")
+                        // Parse the OpenAI response
+                        self.parseOpenAIResponse(content: content, completion: completion)
+                    } else {
+                        print("OpenAI JSON shape unexpected - no content")
+                        completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                    }
+                } else {
+                    print("OpenAI JSON shape unexpected")
+                    completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                }
+            } catch {
+                print("OpenAI JSON decode error:", error)
+                if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+    
+    func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
+        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
+            return
+        }
+        
+        let base64Image = imageData.base64EncodedString()
+        
+        // Debug logging
+        let key = APIKeys.openAIAPIKey
+        print("OpenAI key prefix:", key.prefix(7), "len:", key.count)
+        precondition(!key.contains("YOUR_"), "APIKeys.swift still has placeholder")
+        
+        let requestBody: [String: Any] = [
+            "model": "gpt-4o",
+            "response_format": ["type": "json_object"],
+            "messages": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "text",
+                            "text": """
+                               I need to extract lottery numbers from a legitimate lottery ticket for verification purposes.
+                               This is for a personal lottery ticket checking app to verify winning numbers.
+                               
+                               IMPORTANT: This ticket has multiple rows of lottery numbers. You must scan the ENTIRE ticket image from top to bottom.
+                               Look for ALL rows labeled A, B, C, D, E, F, G, H, I, J (or similar) that contain lottery numbers.
+                               
+                               Return ONLY a JSON object with this exact schema:
+                               {"rows": [{"numbers":[n,n,n,n,n], "special": n}]} with no prose, no code fences.
+                               
+                               Rules:
+                               - Scan the ENTIRE ticket image from top to bottom
+                               - Extract numbers from ALL rows visible in the image
+                               - Look for rows labeled A, B, C, D, E, F, G, H, I, J or similar
+                               - If you cannot read a number, use -1
+                               - Each row should have 5 regular numbers and 1 special number
+                               - Regular numbers: 1-69, Special numbers: 1-26
+                               - CRITICAL: Look for ALL rows from top to bottom of the ticket
+                               - The ticket has multiple rows - extract EVERY single row you can see
+                               
+                               Example response format:
+                               {"rows": [
+                                 {"numbers":[10,36,47,63,74], "special": 4},
+                                 {"numbers":[11,23,50,60,71], "special": 9},
+                                 {"numbers":[44,47,53,62,74], "special": 8},
+                                 {"numbers":[4,24,30,31,49], "special": 4},
+                                 {"numbers":[1,10,29,49,53], "special": 14},
+                                 {"numbers":[12,20,21,24,65], "special": 12},
+                                 {"numbers":[15,17,43,51,61], "special": 11},
+                                 {"numbers":[8,10,15,63,69], "special": 1},
+                                 {"numbers":[5,7,12,55,63], "special": 9},
+                                 {"numbers":[41,42,44,50,69], "special": 1}
+                               ]}
+                            """
+                        ],
+                        [
+                            "type": "image_url",
+                            "image_url": [
+                                "url": "data:image/jpeg;base64,\(base64Image)"
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            "max_tokens": 3000
+        ]
+        
+        guard let url = URL(string: openAIBaseURL) else {
+            completion(.failure(NSError(domain: "OpenAI", code: -2, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+        
+        print("OpenAI Single-Request Scanning - Starting request...")
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("OpenAI Single-Request Scanning Error: \(error.localizedDescription)")
+                completion(.failure(error))
+                return
+            }
+            
+            guard let data = data else {
+                completion(.failure(NSError(domain: "OpenAI", code: -3, userInfo: [NSLocalizedDescriptionKey: "No data received"])))
+                return
+            }
+            
+            do {
+                if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let choices = json["choices"] as? [[String: Any]],
+                   let firstChoice = choices.first,
+                   let message = firstChoice["message"] as? [String: Any] {
+                    
+                    // Check for refusal first
+                    if let refusal = message["refusal"] as? String, !refusal.isEmpty {
+                        print("OpenAI refused to process: \(refusal)")
+                        completion(.failure(NSError(domain: "OpenAI", code: -7, userInfo: [NSLocalizedDescriptionKey: "OpenAI refused to process the image: \(refusal)"])))
+                        return
+                    }
+                    
+                    if let content = message["content"] as? String {
+                        print("OpenAI Single-Request Response:\n\(content)")
+                        // Parse the OpenAI response
+                        self.parseOpenAIResponse(content: content, completion: completion)
+                    } else {
+                        print("OpenAI JSON shape unexpected - no content")
+                        completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
+                    }
+                } else {
+                    print("OpenAI JSON decode error")
+                    if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
+                    completion(.failure(NSError(domain: "OpenAI", code: -5, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON structure"])))
+                }
+            } catch {
+                print("OpenAI JSON decode error:", error)
+                if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
+                completion(.failure(NSError(domain: "OpenAI", code: -5, userInfo: [NSLocalizedDescriptionKey: "JSON decode error: \(error.localizedDescription)"])))
+            }
+        }.resume()
+    }
+    
     private func parseOpenAIResponse(content: String, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
-        // Extract JSON from the response (it might be wrapped in markdown)
-        let jsonPattern = #"```json\s*(\{[\s\S]*?\})\s*```"#
-        let fallbackPattern = #"(\{[\s\S]*?\})"#
+        // Extract JSON (may be array or object; may be wrapped in code fences)
+        let fencedPattern = #"```[a-zA-Z]*\s*([\s\S]*?)\s*```"#
         
         var jsonString: String?
         
-        if let range = content.range(of: jsonPattern, options: .regularExpression) {
-            jsonString = String(content[range])
-            jsonString = jsonString?.replacingOccurrences(of: "```json", with: "").replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-        } else if let range = content.range(of: fallbackPattern, options: .regularExpression) {
-            jsonString = String(content[range])
+        if let range = content.range(of: fencedPattern, options: .regularExpression) {
+            let fenced = String(content[range])
+            jsonString = fenced.replacingOccurrences(of: "```json", with: "")
+                               .replacingOccurrences(of: "```", with: "")
+                               .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            jsonString = content.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         
         guard let json = jsonString,
@@ -163,20 +452,36 @@ final class TicketNumberOCR {
         }
         
         do {
-            if let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let rows = parsed["rows"] as? [[String: Any]] {
+            let top = try JSONSerialization.jsonObject(with: data)
+            var rowsJSON: [[String: Any]] = []
+            
+            // Handle different response formats
+            if let array = top as? [[String: Any]] {
+                // Direct array format: [{"numbers":[...], "special": ...}]
+                rowsJSON = array
+            } else if let obj = top as? [String: Any], let rows = obj["rows"] as? [[String: Any]] {
+                // Nested rows format: {"rows": [{"numbers":[...], "special": ...}]}
+                rowsJSON = rows
+            } else if let singleRow = top as? [String: Any] {
+                // Single row format: {"numbers":[...], "special": ...}
+                rowsJSON = [singleRow]
+            } else {
+                completion(.failure(NSError(domain: "OpenAI", code: -6, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON structure"])))
+                return
+            }
                 
                 var ticketRows: [TicketRow] = []
                 
-                for rowData in rows {
-                    let regularNumbersRaw = (rowData["regular_numbers"] as? [Any]) ?? []
+                for rowData in rowsJSON {
+                    // Handle both old format (regular_numbers) and new format (numbers)
+                    let regularNumbersRaw = (rowData["regular_numbers"] as? [Any]) ?? (rowData["numbers"] as? [Any]) ?? []
                     // Coerce each element to Int; use -1 if missing/invalid
                     let coercedRegulars: [Int] = regularNumbersRaw.map { elem in
                         if let v = elem as? Int { return v }
                         if let s = elem as? String, let v = Int(s) { return v }
                         return -1
                     }
-                    let specialRaw = rowData["special_number"]
+                    let specialRaw = rowData["special_number"] ?? rowData["special"]
                     let specialNumber: Int? = {
                         if let v = specialRaw as? Int { return v }
                         if let s = specialRaw as? String, let v = Int(s) { return v }
@@ -192,9 +497,6 @@ final class TicketNumberOCR {
                 
                 print("OpenAI OCR Success - Found \(ticketRows.count) rows")
                 completion(.success(ticketRows))
-            } else {
-                completion(.failure(NSError(domain: "OpenAI", code: -6, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON structure"])))
-            }
         } catch {
             completion(.failure(error))
         }
@@ -2154,7 +2456,7 @@ class QRScannerViewController: UIViewController {
                         let issueCount = self.countIssues(in: rows)
                         if issueCount > 0 {
                             self.showIssuesToast(count: issueCount)
-                        }
+                    }
                     
                     // Convert to lottery data format
                     let lotteryData = self.convertTicketRowsToLotteryData(rows)
@@ -2196,26 +2498,18 @@ class QRScannerViewController: UIViewController {
         
         print("ConvertTicketRows - Valid rows count: \(validRows.count)")
         
-        // Process up to 5 rows, filling with -1 when unknown as requested
-        for i in 0..<5 {
-            if i < validRows.count {
-                let row = validRows[i]
+        // Process all valid rows - no hardcoded limit
+        for (i, row) in validRows.enumerated() {
                 // Ensure we have exactly 5 regular numbers and 1 powerball
                 let regularNumbers = Array(row.numbers.prefix(5))
-                let paddedRegulars = regularNumbers + Array(repeating: -1, count: max(0, 5 - regularNumbers.count))
-                let powerball = row.special ?? -1
+            let paddedRegulars = regularNumbers + Array(repeating: -1, count: max(0, 5 - regularNumbers.count))
+            let powerball = row.special ?? -1
                 
                 let regularNumbersStr = paddedRegulars.map { String($0) }.joined(separator: " ")
                 let powerballStr = String(powerball)
                 let rowData = "\(regularNumbersStr) \(powerballStr)"
                 allRows.append(rowData)
                 print("  Converted row \(i): '\(rowData)'")
-            } else {
-                // Add empty row (all -1s)
-                let emptyRow = "-1 -1 -1 -1 -1 -1"
-                allRows.append(emptyRow)
-                print("  Empty row \(i): '\(emptyRow)'")
-            }
         }
         
         let result = "Lottery: \(allRows.joined(separator: "|")) Ticket:OCR"
@@ -2853,12 +3147,16 @@ class QRScanResultViewController: UIViewController {
     }
     
     private func displayResult() {
+        print("Results Screen - isLotteryTicket: \(isLotteryTicket)")
+        print("Results Screen - scannedCode: '\(scannedCode)'")
+        
         if isLotteryTicket {
             titleLabel.text = "Lottery Scan Results"
             titleLabel.textColor = .label
             
             // Parse lottery numbers
             parseLotteryNumbers()
+            print("Results Screen - After parsing: lotteryNumbers.count = \(lotteryNumbers.count)")
             setupNumbersGrid()
             
         // Show persistent toast if there are issues
@@ -2883,19 +3181,24 @@ class QRScanResultViewController: UIViewController {
         powerballNumbers = []
         
         print("Results Screen - Parsing lottery numbers from: \(scannedCode)")
+        print("Results Screen - scannedCode length: \(scannedCode.count)")
+        print("Results Screen - Contains '|': \(scannedCode.contains("|"))")
         
         // Parse the scanned code to extract lottery numbers
         if scannedCode.contains("Lottery:") {
             let components = scannedCode.components(separatedBy: "Lottery: ")
             if components.count > 1 {
                 let lotteryData = components[1].components(separatedBy: " Ticket:")[0]
+                print("Results Screen - lotteryData: '\(lotteryData)'")
+                print("Results Screen - lotteryData contains '|': \(lotteryData.contains("|"))")
                 
                 // Check if it's multi-row data (separated by |)
                 if lotteryData.contains("|") {
                     let rows = lotteryData.components(separatedBy: "|")
-                    for row in rows {
+                    print("Results Screen - Multi-row detected: \(rows.count) rows")
+                    for (rowIndex, row) in rows.enumerated() {
                         let numbers = row.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: " ")
-                        print("Results Screen - Processing row: '\(row)' -> numbers: \(numbers)")
+                        print("Results Screen - Processing row \(rowIndex): '\(row)' -> numbers: \(numbers)")
                         
                         // Always process the row, even if some numbers are missing
                         var regularNumbers: [Int] = []
@@ -2917,11 +3220,21 @@ class QRScanResultViewController: UIViewController {
                         lotteryNumbers.append(regularNumbers)
                         powerballNumbers.append(powerball)
                         
-                        print("Results Screen - Added row: \(regularNumbers) PB: \(powerball)")
+                        print("Results Screen - Added row \(rowIndex): \(regularNumbers) PB: \(powerball)")
                     }
                 } else {
-                    // Single row format
-                    let numbers = lotteryData.components(separatedBy: ",")
+                    // Single row format - try both comma and space separated
+                    let numbers: [String]
+                    if lotteryData.contains(",") {
+                        // Comma-separated format: "10,15,25,30,43,3"
+                        numbers = lotteryData.components(separatedBy: ",")
+                    } else {
+                        // Space-separated format: "10 15 25 30 43 3"
+                        numbers = lotteryData.components(separatedBy: " ")
+                    }
+                    
+                    print("Results Screen - Single row numbers: \(numbers)")
+                    
                     if numbers.count >= 6 {
                         var regularNumbers: [Int] = []
                         for i in 0..<5 {
@@ -2932,18 +3245,15 @@ class QRScanResultViewController: UIViewController {
                         if let powerball = Int(numbers[5].replacingOccurrences(of: " PB:", with: "")) {
                             lotteryNumbers.append(regularNumbers)
                             powerballNumbers.append(powerball)
+                            print("Results Screen - Added single row: \(regularNumbers) PB: \(powerball)")
                         }
                     }
                 }
             }
         }
         
-        // If no numbers parsed or less than 5 rows, show empty circles
-        while lotteryNumbers.count < 5 {
-            // Add empty rows (0 means empty circle)
-            lotteryNumbers.append([0, 0, 0, 0, 0])
-            powerballNumbers.append(0)
-        }
+        // Only show rows that were actually scanned - no padding to 5 rows
+        // The UI will dynamically adjust to show only the scanned rows
         
         print("Results Screen - Parsed lottery numbers:")
         for (index, row) in lotteryNumbers.enumerated() {
@@ -2952,19 +3262,42 @@ class QRScanResultViewController: UIViewController {
     }
     
     private func setupNumbersGrid() {
+        print("Results Screen - setupNumbersGrid: lotteryNumbers.count = \(lotteryNumbers.count)")
+        print("Results Screen - setupNumbersGrid: powerballNumbers.count = \(powerballNumbers.count)")
+        
+        // Safety check
+        guard numbersStackView.superview != nil else {
+            print("Results Screen - ERROR: numbersStackView not in view hierarchy")
+            return
+        }
+        
         // Clear existing views
         numbersStackView.arrangedSubviews.forEach { $0.removeFromSuperview() }
         
-        let rowLabels = ["A", "B", "C", "D", "E"]
+        let rowLabels = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O"] // Extended labels for more rows
         
+        // Only create rows for the actual scanned data
         for (index, row) in lotteryNumbers.enumerated() {
+            let rowLabel = index < rowLabels.count ? rowLabels[index] : "Row \(index + 1)"
+            print("Results Screen - Creating row \(index): \(rowLabel) with numbers: \(row) PB: \(powerballNumbers[index])")
+            
+            // Safety check for powerball array bounds
+            let powerball = index < powerballNumbers.count ? powerballNumbers[index] : 0
+            
+            do {
             let rowView = createNumberRowView(
-                label: rowLabels[index],
+                    label: rowLabel,
                 numbers: row,
-                powerball: powerballNumbers[index]
+                    powerball: powerball
             )
             numbersStackView.addArrangedSubview(rowView)
+                print("Results Screen - Successfully added row \(index) to UI")
+            } catch {
+                print("Results Screen - ERROR creating row \(index): \(error)")
         }
+        }
+        
+        print("Results Screen - setupNumbersGrid: Added \(lotteryNumbers.count) rows to UI")
     }
     
     private func createNumberRowView(label: String, numbers: [Int], powerball: Int) -> UIView {
@@ -2984,8 +3317,10 @@ class QRScanResultViewController: UIViewController {
         numbersStackView.translatesAutoresizingMaskIntoConstraints = false
         rowView.addSubview(numbersStackView)
         
-        // Add number buttons
-        for number in numbers {
+        // Add number buttons (limit to 5 to prevent overflow)
+        let maxNumbers = min(numbers.count, 5)
+        for i in 0..<maxNumbers {
+            let number = numbers[i]
             let button = createNumberButton(number: number)
             numbersStackView.addArrangedSubview(button)
         }
@@ -3002,16 +3337,36 @@ class QRScanResultViewController: UIViewController {
         let powerballButton = createPowerballButton(number: powerball)
         numbersStackView.addArrangedSubview(powerballButton)
         
+        // Set up constraints with priority to prevent conflicts
+        let heightConstraint = rowView.heightAnchor.constraint(equalToConstant: 50)
+        heightConstraint.priority = UILayoutPriority(999)
+        
+        let labelLeadingConstraint = labelView.leadingAnchor.constraint(equalTo: rowView.leadingAnchor)
+        labelLeadingConstraint.priority = UILayoutPriority(999)
+        
+        let labelCenterYConstraint = labelView.centerYAnchor.constraint(equalTo: rowView.centerYAnchor)
+        labelCenterYConstraint.priority = UILayoutPriority(999)
+        
+        let labelWidthConstraint = labelView.widthAnchor.constraint(equalToConstant: 20)
+        labelWidthConstraint.priority = UILayoutPriority(999)
+        
+        let stackLeadingConstraint = numbersStackView.leadingAnchor.constraint(equalTo: labelView.trailingAnchor, constant: 10)
+        stackLeadingConstraint.priority = UILayoutPriority(999)
+        
+        let stackTrailingConstraint = numbersStackView.trailingAnchor.constraint(equalTo: rowView.trailingAnchor)
+        stackTrailingConstraint.priority = UILayoutPriority(999)
+        
+        let stackCenterYConstraint = numbersStackView.centerYAnchor.constraint(equalTo: rowView.centerYAnchor)
+        stackCenterYConstraint.priority = UILayoutPriority(999)
+        
         NSLayoutConstraint.activate([
-            rowView.heightAnchor.constraint(equalToConstant: 50),
-            
-            labelView.leadingAnchor.constraint(equalTo: rowView.leadingAnchor),
-            labelView.centerYAnchor.constraint(equalTo: rowView.centerYAnchor),
-            labelView.widthAnchor.constraint(equalToConstant: 20),
-            
-            numbersStackView.leadingAnchor.constraint(equalTo: labelView.trailingAnchor, constant: 10),
-            numbersStackView.trailingAnchor.constraint(equalTo: rowView.trailingAnchor),
-            numbersStackView.centerYAnchor.constraint(equalTo: rowView.centerYAnchor)
+            heightConstraint,
+            labelLeadingConstraint,
+            labelCenterYConstraint,
+            labelWidthConstraint,
+            stackLeadingConstraint,
+            stackTrailingConstraint,
+            stackCenterYConstraint
         ])
         
         return rowView
@@ -3043,9 +3398,14 @@ class QRScanResultViewController: UIViewController {
         // Add tap gesture for editing
         button.addTarget(self, action: #selector(numberButtonTapped(_:)), for: .touchUpInside)
         
+        let widthConstraint = button.widthAnchor.constraint(equalToConstant: 40)
+        let heightConstraint = button.heightAnchor.constraint(equalToConstant: 40)
+        widthConstraint.priority = UILayoutPriority(999)
+        heightConstraint.priority = UILayoutPriority(999)
+        
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 40),
-            button.heightAnchor.constraint(equalToConstant: 40)
+            widthConstraint,
+            heightConstraint
         ])
         
         return button
@@ -3078,9 +3438,14 @@ class QRScanResultViewController: UIViewController {
         button.addTarget(self, action: #selector(powerballButtonTapped(_:)), for: .touchUpInside)
         button.accessibilityIdentifier = "powerball"
         
+        let widthConstraint = button.widthAnchor.constraint(equalToConstant: 40)
+        let heightConstraint = button.heightAnchor.constraint(equalToConstant: 40)
+        widthConstraint.priority = UILayoutPriority(999)
+        heightConstraint.priority = UILayoutPriority(999)
+        
         NSLayoutConstraint.activate([
-            button.widthAnchor.constraint(equalToConstant: 40),
-            button.heightAnchor.constraint(equalToConstant: 40)
+            widthConstraint,
+            heightConstraint
         ])
         
         return button
@@ -3114,8 +3479,11 @@ class QRScanResultViewController: UIViewController {
             // Check if button is disabled due to issues
             if !actionButton.isEnabled {
                 let issueCount = countCurrentIssues()
-                showVerificationAlert(title: "Complete All Fields", 
-                                   message: "Please fill in all \(issueCount) empty fields before checking for winners.")
+                let alert = UIAlertController(title: "Complete All Fields", 
+                                           message: "Please fill in all \(issueCount) empty fields before checking for winners.", 
+                                           preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                present(alert, animated: true)
                 return
             }
             
@@ -3128,9 +3496,6 @@ class QRScanResultViewController: UIViewController {
                 self.checkForWinners()
             })
             
-            alert.addAction(UIAlertAction(title: "Verify Ticket Authenticity", style: .default) { _ in
-                self.verifyTicketAuthenticity()
-            })
             
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
             
@@ -3323,9 +3688,10 @@ class QRScanResultViewController: UIViewController {
         // Display user's scanned numbers
         if !lotteryNumbers.isEmpty {
             message += "Your Numbers:\n"
+            let rowLabels = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
             for (index, row) in lotteryNumbers.enumerated() {
                 if !row.allSatisfy({ $0 == 0 }) {
-                    let rowLabel = ["A", "B", "C", "D", "E"][index]
+                    let rowLabel = index < rowLabels.count ? rowLabels[index] : "Row \(index + 1)"
                     let numbersString = row.map { $0 == 0 ? "⚪" : "\($0)" }.joined(separator: " ")
                     let powerballString = powerballNumbers[index] > 0 ? " PB: \(powerballNumbers[index])" : ""
                     message += "\(rowLabel): \(numbersString)\(powerballString)\n"
@@ -3601,396 +3967,6 @@ class QRScanResultViewController: UIViewController {
             self.issuesToastView?.removeFromSuperview()
             self.issuesToastView = nil
         }
-    }
-    
-    // MARK: - Ticket Verification
-    func verifyTicketAuthenticity() {
-        // Check if all fields are filled
-        let issueCount = countCurrentIssues()
-        if issueCount > 0 {
-            showVerificationAlert(title: "Incomplete Ticket", 
-                                message: "Please fill in all lottery numbers before verification.")
-            return
-        }
-        
-        // Show verification options
-        let alert = UIAlertController(title: "Verify Ticket Authenticity", 
-                                   message: "Choose verification method:", 
-                                   preferredStyle: .actionSheet)
-        
-        // Option 1: Check against official lottery results
-        alert.addAction(UIAlertAction(title: "Check Against Official Results", style: .default) { _ in
-            self.checkAgainstOfficialResults()
-        })
-        
-        // Option 2: Verify ticket format
-        alert.addAction(UIAlertAction(title: "Verify Ticket Format", style: .default) { _ in
-            self.verifyTicketFormat()
-        })
-        
-        // Option 3: Verify QR/Barcode authenticity
-        alert.addAction(UIAlertAction(title: "Verify QR/Barcode Authenticity", style: .default) { _ in
-            self.verifyQRBarcodeAuthenticity()
-        })
-        
-        // Option 4: Generate verification report
-        alert.addAction(UIAlertAction(title: "Generate Verification Report", style: .default) { _ in
-            self.generateVerificationReport()
-        })
-        
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        // For iPad
-        if let popover = alert.popoverPresentationController {
-            popover.sourceView = self.view
-            popover.sourceRect = CGRect(x: self.view.bounds.midX, y: self.view.bounds.midY, width: 0, height: 0)
-            popover.permittedArrowDirections = []
-        }
-        
-        present(alert, animated: true)
-    }
-    
-    private func checkAgainstOfficialResults() {
-        // Show progress
-        let progressAlert = UIAlertController(title: "Verifying...", message: "Checking against official lottery results", preferredStyle: .alert)
-        present(progressAlert, animated: true)
-        
-        // Detect game type and fetch results
-        let gameType = detectLotteryGameType()
-        
-        fetchLotteryResults { [weak self] result in
-            DispatchQueue.main.async {
-                progressAlert.dismiss(animated: true) {
-                    switch result {
-                    case .success(let lotteryResult):
-                        self?.compareWithOfficialResults(lotteryResult)
-                    case .failure(let error):
-                        self?.showVerificationAlert(title: "Verification Failed", 
-                                                 message: "Could not fetch official results: \(error.message)")
-                    }
-                }
-            }
-        }
-    }
-    
-    private func compareWithOfficialResults(_ officialResult: LotteryResult) {
-        // Parse the official results string
-        guard let resultsString = officialResult.results else {
-            showVerificationAlert(title: "Verification Failed", 
-                               message: "No official results data available.")
-            return
-        }
-        
-        // Parse the results string to extract winning numbers
-        let parsedNumbers = parseOfficialResults(resultsString)
-        
-        var matches = 0
-        var totalNumbers = 0
-        var verificationDetails: [String] = []
-        
-        // Compare each row with parsed official numbers
-        for (rowIndex, row) in lotteryNumbers.enumerated() {
-            let powerball = powerballNumbers[rowIndex]
-            
-            // Count matches in regular numbers
-            for number in row {
-                if number > 0 {
-                    totalNumbers += 1
-                    if parsedNumbers.regularNumbers.contains(number) {
-                        matches += 1
-                        verificationDetails.append("Row \(rowIndex + 1): Number \(number) matches!")
-                    }
-                }
-            }
-            
-            // Check powerball match
-            if powerball > 0 {
-                totalNumbers += 1
-                if powerball == parsedNumbers.powerball {
-                    matches += 1
-                    verificationDetails.append("Row \(rowIndex + 1): Powerball \(powerball) matches!")
-                }
-            }
-        }
-        
-        // Generate verification report
-        let matchPercentage = totalNumbers > 0 ? (matches * 100) / totalNumbers : 0
-        let message = """
-        Verification Results:
-        
-        Official Draw: \(officialResult.draw ?? "Unknown")
-        Matches: \(matches)/\(totalNumbers) numbers (\(matchPercentage)%)
-        
-        \(verificationDetails.isEmpty ? "No specific matches found." : verificationDetails.joined(separator: "\n"))
-        
-        \(matches > 0 ? "✅ Some numbers match official results!" : "❌ No matches with official results.")
-        
-        Official Numbers: \(parsedNumbers.regularNumbers.map(String.init).joined(separator: ", "))
-        Powerball: \(parsedNumbers.powerball)
-        """
-        
-        showVerificationAlert(title: "Verification Complete", message: message)
-    }
-    
-    private func parseOfficialResults(_ resultsString: String) -> (regularNumbers: [Int], powerball: Int) {
-        // This is a simplified parser - you may need to adjust based on actual API response format
-        let components = resultsString.components(separatedBy: CharacterSet(charactersIn: " ,-"))
-        var regularNumbers: [Int] = []
-        var powerball = 0
-        
-        for component in components {
-            if let number = Int(component.trimmingCharacters(in: .whitespaces)) {
-                if number <= 69 && regularNumbers.count < 5 {
-                    regularNumbers.append(number)
-                } else if number <= 26 && powerball == 0 {
-                    powerball = number
-                }
-            }
-        }
-        
-        return (regularNumbers, powerball)
-    }
-    
-    private func verifyTicketFormat() {
-        var issues: [String] = []
-        var warnings: [String] = []
-        
-        // Check number ranges
-        for (rowIndex, row) in lotteryNumbers.enumerated() {
-            for (colIndex, number) in row.enumerated() {
-                if number > 0 {
-                    if number > 69 {
-                        issues.append("Row \(rowIndex + 1), Col \(colIndex + 1): Number \(number) exceeds maximum (69)")
-                    } else if number < 1 {
-                        issues.append("Row \(rowIndex + 1), Col \(colIndex + 1): Number \(number) is below minimum (1)")
-                    }
-                }
-            }
-            
-            // Check powerball
-            let powerball = powerballNumbers[rowIndex]
-            if powerball > 0 {
-                if powerball > 26 {
-                    issues.append("Row \(rowIndex + 1): Powerball \(powerball) exceeds maximum (26)")
-                } else if powerball < 1 {
-                    issues.append("Row \(rowIndex + 1): Powerball \(powerball) is below minimum (1)")
-                }
-            }
-        }
-        
-        // Check for duplicate numbers in same row
-        for (rowIndex, row) in lotteryNumbers.enumerated() {
-            let validNumbers = row.filter { $0 > 0 }
-            let uniqueNumbers = Set(validNumbers)
-            if validNumbers.count != uniqueNumbers.count {
-                warnings.append("Row \(rowIndex + 1): Contains duplicate numbers")
-            }
-        }
-        
-        let message = """
-        Format Verification Results:
-        
-        \(issues.isEmpty ? "✅ No format issues found" : "❌ Format Issues:\n" + issues.joined(separator: "\n"))
-        
-        \(warnings.isEmpty ? "" : "⚠️ Warnings:\n" + warnings.joined(separator: "\n"))
-        
-        \(issues.isEmpty && warnings.isEmpty ? "Ticket format appears valid!" : "Please review the issues above.")
-        """
-        
-        showVerificationAlert(title: "Format Verification", message: message)
-    }
-    
-    private func verifyQRBarcodeAuthenticity() {
-        var verificationResults: [String] = []
-        var authenticityScore = 0
-        var maxScore = 0
-        
-        // 1. Check QR/Barcode format and structure
-        maxScore += 20
-        if scannedCode.contains("Lottery:") {
-            authenticityScore += 20
-            verificationResults.append("✅ Contains 'Lottery:' identifier")
-        } else {
-            verificationResults.append("❌ Missing 'Lottery:' identifier")
-        }
-        
-        // 2. Check for ticket number format
-        maxScore += 15
-        if scannedCode.contains("Ticket:") {
-            authenticityScore += 15
-            verificationResults.append("✅ Contains 'Ticket:' identifier")
-        } else {
-            verificationResults.append("❌ Missing 'Ticket:' identifier")
-        }
-        
-        // 3. Validate QR code length and complexity
-        maxScore += 10
-        if scannedCode.count > 50 {
-            authenticityScore += 10
-            verificationResults.append("✅ QR code has sufficient length (\(scannedCode.count) characters)")
-        } else {
-            verificationResults.append("❌ QR code too short (\(scannedCode.count) characters)")
-        }
-        
-        // 4. Check for proper data structure
-        maxScore += 15
-        let components = scannedCode.components(separatedBy: " ")
-        if components.count >= 3 {
-            authenticityScore += 15
-            verificationResults.append("✅ Proper data structure with \(components.count) components")
-        } else {
-            verificationResults.append("❌ Insufficient data structure (\(components.count) components)")
-        }
-        
-        // 5. Validate lottery number format in QR code
-        maxScore += 20
-        if scannedCode.contains("Lottery:") {
-            let lotteryPart = scannedCode.components(separatedBy: "Lottery: ")[1].components(separatedBy: " Ticket:")[0]
-            let numbers = lotteryPart.components(separatedBy: " | ")
-            var validNumbers = 0
-            
-            for numberString in numbers {
-                if let number = Int(numberString), number >= 1 && number <= 69 {
-                    validNumbers += 1
-                }
-            }
-            
-            if validNumbers >= 5 {
-                authenticityScore += 20
-                verificationResults.append("✅ Contains valid lottery numbers (\(validNumbers) valid)")
-            } else {
-                verificationResults.append("❌ Insufficient valid lottery numbers (\(validNumbers) valid)")
-            }
-        }
-        
-        // 6. Check for powerball numbers
-        maxScore += 10
-        if scannedCode.contains("PB:") {
-            authenticityScore += 10
-            verificationResults.append("✅ Contains powerball numbers")
-        } else {
-            verificationResults.append("❌ Missing powerball numbers")
-        }
-        
-        // 7. Validate ticket number format
-        maxScore += 10
-        if scannedCode.contains("Ticket:") {
-            let ticketPart = scannedCode.components(separatedBy: "Ticket: ")[1]
-            if ticketPart.count >= 10 && ticketPart.allSatisfy({ $0.isNumber }) {
-                authenticityScore += 10
-                verificationResults.append("✅ Valid ticket number format")
-            } else {
-                verificationResults.append("❌ Invalid ticket number format")
-            }
-        }
-        
-        // Calculate authenticity percentage
-        let authenticityPercentage = maxScore > 0 ? (authenticityScore * 100) / maxScore : 0
-        
-        // Determine authenticity level
-        let authenticityLevel: String
-        let authenticityColor: String
-        
-        if authenticityPercentage >= 90 {
-            authenticityLevel = "HIGH AUTHENTICITY"
-            authenticityColor = "🟢"
-        } else if authenticityPercentage >= 70 {
-            authenticityLevel = "MEDIUM AUTHENTICITY"
-            authenticityColor = "🟡"
-        } else if authenticityPercentage >= 50 {
-            authenticityLevel = "LOW AUTHENTICITY"
-            authenticityColor = "🟠"
-        } else {
-            authenticityLevel = "SUSPICIOUS"
-            authenticityColor = "🔴"
-        }
-        
-        let message = """
-        QR/Barcode Authenticity Verification
-        
-        \(authenticityColor) Authenticity Level: \(authenticityLevel)
-        Score: \(authenticityScore)/\(maxScore) (\(authenticityPercentage)%)
-        
-        VERIFICATION RESULTS:
-        \(verificationResults.joined(separator: "\n"))
-        
-        QR CODE CONTENT:
-        "\(scannedCode)"
-        
-        RECOMMENDATIONS:
-        \(authenticityPercentage >= 80 ? "✅ QR/Barcode appears authentic" : "⚠️ QR/Barcode shows signs of potential issues")
-        \(authenticityPercentage < 60 ? "🚨 Consider additional verification methods" : "")
-        """
-        
-        showVerificationAlert(title: "QR/Barcode Verification", message: message)
-    }
-    
-    private func generateVerificationReport() {
-        let report = generateTicketReport()
-        
-        let alert = UIAlertController(title: "Verification Report", 
-                                   message: report, 
-                                   preferredStyle: .alert)
-        
-        alert.addAction(UIAlertAction(title: "Copy Report", style: .default) { _ in
-            UIPasteboard.general.string = report
-            self.showCopyConfirmation()
-        })
-        
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        
-        present(alert, animated: true)
-    }
-    
-    private func generateTicketReport() -> String {
-        let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
-        let gameType = detectLotteryGameType()
-        
-        var report = """
-        LOTTERY TICKET VERIFICATION REPORT
-        Generated: \(timestamp)
-        Game Type: \(gameType)
-        
-        TICKET NUMBERS:
-        """
-        
-        for (rowIndex, row) in lotteryNumbers.enumerated() {
-            let powerball = powerballNumbers[rowIndex]
-            let numbersString = row.map { $0 > 0 ? String($0) : "Empty" }.joined(separator: " | ")
-            report += "\nRow \(rowIndex + 1): \(numbersString) | PB: \(powerball > 0 ? String(powerball) : "Empty")"
-        }
-        
-        report += """
-        
-        
-        QR/BARCODE VERIFICATION:
-        Scanned Code: "\(scannedCode)"
-        Code Length: \(scannedCode.count) characters
-        Contains Lottery Data: \(scannedCode.contains("Lottery:") ? "Yes" : "No")
-        Contains Ticket Number: \(scannedCode.contains("Ticket:") ? "Yes" : "No")
-        
-        VERIFICATION NOTES:
-        • This is a digital verification of scanned lottery numbers
-        • QR/Barcode verification checks format and structure
-        • For official verification, check with your lottery retailer
-        • Official lottery websites provide authoritative results
-        • Physical tickets have additional security features
-        
-        SECURITY RECOMMENDATIONS:
-        • Always purchase tickets from authorized retailers
-        • Check official lottery websites for results
-        • Keep physical tickets in a safe place
-        • Verify winning tickets immediately
-        • Use QR/Barcode verification for additional authenticity checks
-        """
-        
-        return report
-    }
-    
-    private func showVerificationAlert(title: String, message: String) {
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
     }
     
     private func countCurrentIssues() -> Int {

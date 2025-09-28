@@ -2,6 +2,106 @@ import UIKit
 import AVFoundation
 import CoreImage
 import Vision
+import Network
+
+// MARK: - Network Connectivity Utility
+class NetworkConnectivityManager {
+    static let shared = NetworkConnectivityManager()
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "NetworkMonitor")
+    private var isConnected = false
+    
+    private init() {
+        startMonitoring()
+    }
+    
+    private func startMonitoring() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                self?.isConnected = path.status == .satisfied
+            }
+        }
+        monitor.start(queue: queue)
+    }
+    
+    /// Check if device has internet connectivity
+    func isInternetAvailable() -> Bool {
+        return isConnected
+    }
+    
+    /// Check internet connectivity with completion handler
+    func checkInternetConnectivity(completion: @escaping (Bool) -> Void) {
+        DispatchQueue.main.async {
+            completion(self.isConnected)
+        }
+    }
+    
+    deinit {
+        monitor.cancel()
+    }
+}
+
+// MARK: - Image Resizing Configuration
+struct ImageResizeConfig {
+    static let maxWidth: CGFloat = 1024
+    static let maxHeight: CGFloat = 1024
+    static let compressionQuality: CGFloat = 0.8
+    static let maxFileSizeKB: Int = 500 // Maximum file size in KB
+}
+
+// MARK: - Image Resizing Utilities
+extension UIImage {
+    /// Resizes the image to fit within the specified dimensions while maintaining aspect ratio
+    func resizedForUpload() -> UIImage? {
+        return self.resized(to: CGSize(width: ImageResizeConfig.maxWidth, height: ImageResizeConfig.maxHeight))
+    }
+    
+    /// Resizes image to fit within specified size while maintaining aspect ratio
+    func resized(to size: CGSize) -> UIImage? {
+        let aspectRatio = self.size.width / self.size.height
+        var newSize = size
+        
+        // Calculate new size maintaining aspect ratio
+        if aspectRatio > 1 {
+            // Landscape: width is the limiting factor
+            newSize.height = size.width / aspectRatio
+        } else {
+            // Portrait: height is the limiting factor
+            newSize.width = size.height * aspectRatio
+        }
+        
+        // Ensure we don't upscale
+        if newSize.width > self.size.width || newSize.height > self.size.height {
+            return self
+        }
+        
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 0.0)
+        defer { UIGraphicsEndImageContext() }
+        
+        self.draw(in: CGRect(origin: .zero, size: newSize))
+        return UIGraphicsGetImageFromCurrentImageContext()
+    }
+    
+    /// Converts image to JPEG data with size optimization
+    func optimizedJPEGData() -> Data? {
+        var compressionQuality = ImageResizeConfig.compressionQuality
+        var imageData = self.jpegData(compressionQuality: compressionQuality)
+        
+        // Reduce quality if file size is too large
+        while let data = imageData, data.count > ImageResizeConfig.maxFileSizeKB * 1024 && compressionQuality > 0.1 {
+            compressionQuality -= 0.1
+            imageData = self.jpegData(compressionQuality: compressionQuality)
+        }
+        
+        return imageData
+    }
+    
+    /// Gets file size in KB
+    func fileSizeKB() -> Int {
+        guard let data = self.jpegData(compressionQuality: ImageResizeConfig.compressionQuality) else { return 0 }
+        return data.count / 1024
+    }
+}
 
 // MARK: - Ticket OCR
 struct TicketRow {
@@ -47,12 +147,28 @@ final class TicketNumberOCR {
     // MARK: - Row Count Detection
     
     private func detectRowCount(from image: UIImage, completion: @escaping (Result<Int, Error>) -> Void) {
-        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+        // Check internet connectivity first
+        guard NetworkConnectivityManager.shared.isInternetAvailable() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1000, userInfo: [NSLocalizedDescriptionKey: "No internet connection. Please check your network and try again."])))
+            return
+        }
+        
+        // Resize image for optimal upload
+        guard let resizedImage = image.resizedForUpload() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not resize image"])))
+            return
+        }
+        
+        // Convert to optimized JPEG data
+        guard let imageData = resizedImage.optimizedJPEGData() else {
             completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not convert image to JPEG"])))
             return
         }
         
         let base64Image = imageData.base64EncodedString()
+        
+        // Log image size information
+        print("Row Count Detection - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         let requestBody: [String: Any] = [
             "model": "gpt-4o",
@@ -148,12 +264,28 @@ final class TicketNumberOCR {
     }
     
     private func scanWithSpecificRowCount(image: UIImage, expectedRowCount: Int, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
-        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+        // Check internet connectivity first
+        guard NetworkConnectivityManager.shared.isInternetAvailable() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1000, userInfo: [NSLocalizedDescriptionKey: "No internet connection. Please check your network and try again."])))
+            return
+        }
+        
+        // Resize image for optimal upload
+        guard let resizedImage = image.resizedForUpload() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not resize image"])))
+            return
+        }
+        
+        // Convert to optimized JPEG data
+        guard let imageData = resizedImage.optimizedJPEGData() else {
             completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
             return
         }
         
         let base64Image = imageData.base64EncodedString()
+        
+        // Log image size information
+        print("Specific Row Count Scanning - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         // Debug logging
         let key = APIKeys.openAIAPIKey
@@ -297,12 +429,28 @@ final class TicketNumberOCR {
     }
     
     func scanWithOpenAI(image: UIImage, completion: @escaping (Result<[TicketRow], Error>) -> Void) {
-        guard let imageData = image.jpegData(compressionQuality: 0.8) else {
+        // Check internet connectivity first
+        guard NetworkConnectivityManager.shared.isInternetAvailable() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1000, userInfo: [NSLocalizedDescriptionKey: "No internet connection. Please check your network and try again."])))
+            return
+        }
+        
+        // Resize image for optimal upload
+        guard let resizedImage = image.resizedForUpload() else {
+            completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not resize image"])))
+            return
+        }
+        
+        // Convert to optimized JPEG data
+        guard let imageData = resizedImage.optimizedJPEGData() else {
             completion(.failure(NSError(domain: "OpenAI", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to data"])))
             return
         }
         
         let base64Image = imageData.base64EncodedString()
+        
+        // Log image size information
+        print("OpenAI Scanning - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         // Debug logging
         let key = APIKeys.openAIAPIKey
@@ -2475,7 +2623,13 @@ class QRScannerViewController: UIViewController {
                     
                 case .failure(let error):
                         print("OpenAI OCR Error: \(error.localizedDescription)")
-                    self.showNoDataFoundAlert()
+                    
+                    // Check if it's a network connectivity error
+                    if let nsError = error as NSError?, nsError.code == -1000 {
+                        self.showNetworkErrorAlert()
+                    } else {
+                        self.showNoDataFoundAlert()
+                    }
                     }
                 }
             }
@@ -2541,6 +2695,14 @@ class QRScannerViewController: UIViewController {
     
     private func showNoDataFoundAlert() {
         let alert = UIAlertController(title: "No Data Found", message: "No QR code, barcode, or lottery numbers were detected in the captured image. Please try again.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func showNetworkErrorAlert() {
+        let alert = UIAlertController(title: "No Internet Connection", 
+                                    message: "Please check your internet connection and try again. Make sure you're connected to Wi-Fi or cellular data.", 
+                                    preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
@@ -2810,6 +2972,15 @@ class ViewController: UIViewController {
     private var selectedGame: LotteryGame?
     private var selectedDrawDate: Date?
     
+    // MARK: - Network Status
+    private var networkStatusLabel: UILabel = {
+        let label = UILabel()
+        label.font = UIFont.systemFont(ofSize: 12, weight: .medium)
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        return label
+    }()
+    
     // MARK: - UI Elements
     private let scrollView: UIScrollView = {
         let scrollView = UIScrollView()
@@ -2866,7 +3037,7 @@ class ViewController: UIViewController {
     
     private let instructionLabel: UILabel = {
         let label = UILabel()
-        label.text = "Select a lottery game and draw date to scan tickets"
+        label.text = "Select a lottery game and required draw date to scan tickets"
         label.textAlignment = .center
         label.font = UIFont.systemFont(ofSize: 16, weight: .medium)
         label.textColor = .secondaryLabel
@@ -2901,7 +3072,7 @@ class ViewController: UIViewController {
     
     private let dateLabel: UILabel = {
         let label = UILabel()
-        label.text = "Select Draw Date (Optional)"
+        label.text = "Select Draw Date (Required)"
         label.font = UIFont.systemFont(ofSize: 18, weight: .semibold)
         label.textColor = .label
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -2928,16 +3099,6 @@ class ViewController: UIViewController {
         return picker
     }()
     
-    private let latestDrawButton: UIButton = {
-        let button = UIButton(type: .system)
-        button.setTitle("Use Latest Draw", for: .normal)
-        button.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .medium)
-        button.setTitleColor(.systemBlue, for: .normal)
-        button.backgroundColor = UIColor.systemGray6
-        button.layer.cornerRadius = 8
-        button.translatesAutoresizingMaskIntoConstraints = false
-        return button
-    }()
     
     private let selectionStackView: UIStackView = {
         let stackView = UIStackView()
@@ -2971,6 +3132,7 @@ class ViewController: UIViewController {
         setupUI()
         setupConstraints()
         generateInitialTicket()
+        setupNetworkMonitoring()
     }
     
     override func viewDidAppear(_ animated: Bool) {
@@ -3009,6 +3171,7 @@ class ViewController: UIViewController {
         selectionContainerView.addSubview(selectionStackView)
         contentView.addSubview(scanButton)
         contentView.addSubview(instructionLabel)
+        contentView.addSubview(networkStatusLabel)
         
         scanButton.addTarget(self, action: #selector(scanButtonTapped), for: .touchUpInside)
         
@@ -3036,7 +3199,6 @@ class ViewController: UIViewController {
         selectionStackView.addArrangedSubview(gamePicker)
         selectionStackView.addArrangedSubview(dateLabel)
         selectionStackView.addArrangedSubview(datePicker)
-        selectionStackView.addArrangedSubview(latestDrawButton)
         
         // Setup picker delegates
         gamePicker.delegate = self
@@ -3044,7 +3206,6 @@ class ViewController: UIViewController {
         
         // Setup date picker target
         datePicker.addTarget(self, action: #selector(datePickerChanged), for: .valueChanged)
-        latestDrawButton.addTarget(self, action: #selector(latestDrawButtonTapped), for: .touchUpInside)
         
         // Set initial date
         selectedDrawDate = Date()
@@ -3093,9 +3254,15 @@ class ViewController: UIViewController {
             scanButton.widthAnchor.constraint(equalToConstant: 240),
             scanButton.heightAnchor.constraint(equalToConstant: 56),
             
+            // Network Status Label
+            networkStatusLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            networkStatusLabel.topAnchor.constraint(equalTo: scanButton.bottomAnchor, constant: 10),
+            networkStatusLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            networkStatusLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            
             // Instruction Label
             instructionLabel.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            instructionLabel.topAnchor.constraint(equalTo: scanButton.bottomAnchor, constant: 24),
+            instructionLabel.topAnchor.constraint(equalTo: networkStatusLabel.bottomAnchor, constant: 10),
             instructionLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             instructionLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             instructionLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20)
@@ -3104,8 +3271,31 @@ class ViewController: UIViewController {
     
     private func generateInitialTicket() {
         // Don't generate ticket automatically on load
-        instructionLabel.text = "Select a lottery game and draw date to scan tickets"
+        instructionLabel.text = "Select a lottery game and required draw date to scan tickets"
         instructionLabel.textColor = .secondaryLabel
+    }
+    
+    private func setupNetworkMonitoring() {
+        // Update network status initially
+        updateNetworkStatus()
+        
+        // Monitor network changes
+        NetworkConnectivityManager.shared.checkInternetConnectivity { [weak self] isConnected in
+            DispatchQueue.main.async {
+                self?.updateNetworkStatus()
+            }
+        }
+    }
+    
+    private func updateNetworkStatus() {
+        let isConnected = NetworkConnectivityManager.shared.isInternetAvailable()
+        if isConnected {
+            networkStatusLabel.text = "🌐 Connected"
+            networkStatusLabel.textColor = .systemGreen
+        } else {
+            networkStatusLabel.text = "📶 No Internet"
+            networkStatusLabel.textColor = .systemRed
+        }
     }
     
     // MARK: - Lottery Data Loading
@@ -3281,9 +3471,7 @@ class QRScanResultViewController: UIViewController {
     
     private let dateValueLabel: UILabel = {
         let label = UILabel()
-        let formatter = DateFormatter()
-        formatter.dateFormat = "dd MMM, yyyy"
-        label.text = formatter.string(from: Date())
+        label.text = "Select Date" // Will be updated with actual selected date
         label.font = UIFont.boldSystemFont(ofSize: 16)
         label.textColor = .label
         label.backgroundColor = .systemGray6
@@ -3346,6 +3534,15 @@ class QRScanResultViewController: UIViewController {
         setupUI()
         setupConstraints()
         displayResult()
+        
+        // Set the selected draw date
+        if let drawDate = selectedDrawDate {
+            let formatter = DateFormatter()
+            formatter.dateFormat = "dd MMM, yyyy"
+            dateValueLabel.text = formatter.string(from: drawDate)
+        } else {
+            dateValueLabel.text = "No Date Selected"
+        }
         
         closeButton.addTarget(self, action: #selector(closeButtonTapped), for: .touchUpInside)
         actionButton.addTarget(self, action: #selector(actionButtonTapped), for: .touchUpInside)
@@ -3827,6 +4024,12 @@ class QRScanResultViewController: UIViewController {
     // MARK: - Network Service
     
     private func fetchLotteryResults(completion: @escaping (Result<LotteryResult, LotteryAPIError>) -> Void) {
+        // Check internet connectivity first
+        guard NetworkConnectivityManager.shared.isInternetAvailable() else {
+            completion(.failure(LotteryAPIError(message: "No internet connection. Please check your network and try again.", code: -1000)))
+            return
+        }
+        
         // Use the selected game from the picker
         guard let selectedGame = selectedGame else {
             completion(.failure(LotteryAPIError(message: "No game selected", code: nil)))
@@ -3845,11 +4048,13 @@ class QRScanResultViewController: UIViewController {
             URLQueryItem(name: "format", value: "json")
         ]
         
-        // Add draw date if specified (optional parameter)
-        if let drawDate = selectedDrawDate {
-            let dateString = formatDateForAPI(drawDate)
-            queryItems.append(URLQueryItem(name: "draw", value: dateString))
+        // Add draw date (mandatory parameter)
+        guard let drawDate = selectedDrawDate else {
+            completion(.failure(LotteryAPIError(message: "Draw date is required", code: nil)))
+            return
         }
+        let dateString = formatDateForAPI(drawDate)
+        queryItems.append(URLQueryItem(name: "draw", value: dateString))
         
         components.queryItems = queryItems
         
@@ -3862,11 +4067,7 @@ class QRScanResultViewController: UIViewController {
         print("🎯 MAGAYO API CALL:")
         print("   Game: \(selectedGame.name)")
         print("   Game Code: \(gameCode)")
-        if let drawDate = selectedDrawDate {
-            print("   Draw Date: \(formatDateForAPI(drawDate))")
-        } else {
-            print("   Draw Date: Latest (not specified)")
-        }
+        print("   Draw Date: \(dateString)")
         print("   URL: \(url.absoluteString)")
         print("   API Key: \(apiKey.prefix(8))...")
         print("   Full API Request: GET \(url.absoluteString)")
@@ -4070,7 +4271,27 @@ class QRScanResultViewController: UIViewController {
     }
     
     private func showErrorAlert(error: LotteryAPIError) {
-        let alert = UIAlertController(title: "Error", message: error.message, preferredStyle: .alert)
+        let title: String
+        let message: String
+        
+        // Check if it's a network connectivity error
+        if error.code == -1000 {
+            title = "No Internet Connection"
+            message = "Please check your internet connection and try again. Make sure you're connected to Wi-Fi or cellular data."
+        } else {
+            title = "Error"
+            message = error.message
+        }
+        
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+    
+    private func showNetworkErrorAlert() {
+        let alert = UIAlertController(title: "No Internet Connection", 
+                                    message: "Please check your internet connection and try again. Make sure you're connected to Wi-Fi or cellular data.", 
+                                    preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
@@ -4446,6 +4667,11 @@ extension ViewController: QRScannerDelegate {
         instructionLabel.text = "QR Code scanned successfully!"
         instructionLabel.textColor = .systemGreen
         
+        // Log image resizing information if image is provided
+        if let image = image {
+            logImageResizingInfo(image)
+        }
+        
         // Dismiss the scanner first
         dismiss(animated: true) {
             // Present scan result screen after scanner is dismissed
@@ -4458,6 +4684,24 @@ extension ViewController: QRScannerDelegate {
             resultVC.modalPresentationStyle = .fullScreen
             
             self.present(resultVC, animated: true)
+        }
+    }
+    
+    /// Logs information about image resizing for debugging
+    private func logImageResizingInfo(_ image: UIImage) {
+        let originalSize = image.size
+        let originalFileSize = image.fileSizeKB()
+        
+        if let resizedImage = image.resizedForUpload() {
+            let resizedSize = resizedImage.size
+            let resizedFileSize = resizedImage.fileSizeKB()
+            
+            print("📸 Image Resizing Info:")
+            print("   Original: \(Int(originalSize.width))x\(Int(originalSize.height)) (\(originalFileSize) KB)")
+            print("   Resized:  \(Int(resizedSize.width))x\(Int(resizedSize.height)) (\(resizedFileSize) KB)")
+            print("   Reduction: \(String(format: "%.1f", (1.0 - Double(resizedFileSize) / Double(originalFileSize)) * 100))%")
+        } else {
+            print("📸 Image Resizing: Failed to resize image")
         }
     }
     
@@ -4478,22 +4722,6 @@ extension ViewController {
         print("📅 Selected draw date: \(formatDateForAPI(selectedDrawDate!))")
     }
     
-    @objc private func latestDrawButtonTapped() {
-        selectedDrawDate = nil // nil means use latest draw
-        datePicker.date = Date()
-        print("📅 Using latest draw (no specific date)")
-        
-        // Show visual feedback
-        UIView.animate(withDuration: 0.2, animations: {
-            self.latestDrawButton.backgroundColor = UIColor.systemGreen
-            self.latestDrawButton.setTitle("✓ Latest Draw Selected", for: .normal)
-        }) { _ in
-            UIView.animate(withDuration: 0.2, delay: 1.0) {
-                self.latestDrawButton.backgroundColor = UIColor.systemGray6
-                self.latestDrawButton.setTitle("Use Latest Draw", for: .normal)
-            }
-        }
-    }
     
     private func formatDateForAPI(_ date: Date) -> String {
         let formatter = DateFormatter()

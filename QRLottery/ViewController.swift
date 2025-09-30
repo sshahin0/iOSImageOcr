@@ -175,7 +175,6 @@ final class TicketNumberOCR {
         let base64Image = imageData.base64EncodedString()
         
         // Log image size information
-        print("Row Count Detection - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         let requestBody: [String: Any] = [
             "model": "gpt-4o",
@@ -229,11 +228,9 @@ final class TicketNumberOCR {
             return
         }
         
-        print("OpenAI Row Count Detection - Starting request...")
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("OpenAI Row Count Detection Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
@@ -250,15 +247,12 @@ final class TicketNumberOCR {
                    let message = firstChoice["message"] as? [String: Any],
                    let content = message["content"] as? String {
                     
-                    print("OpenAI Row Count Response: '\(content)'")
                     
                     // Extract number from response
                     let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
                     if let rowCount = Int(trimmedContent) {
-                        print("OpenAI Row Count Detection - Found \(rowCount) rows")
                         completion(.success(rowCount))
                     } else {
-                        print("OpenAI Row Count Detection - Could not parse number from: '\(trimmedContent)'")
                         completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Could not parse row count"])))
                     }
                 } else {
@@ -292,11 +286,9 @@ final class TicketNumberOCR {
         let base64Image = imageData.base64EncodedString()
         
         // Log image size information
-        print("Specific Row Count Scanning - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         // Debug logging
         let key = APIKeys.openAIAPIKey
-        print("OpenAI key prefix:", key.prefix(7), "len:", key.count)
         precondition(!key.contains("YOUR_"), "APIKeys.swift still has placeholder")
         
         let requestBody: [String: Any] = [
@@ -393,16 +385,12 @@ final class TicketNumberOCR {
             
             // Debug logging
             if let http = response as? HTTPURLResponse {
-                print("OpenAI HTTP status:", http.statusCode)
-                print("OpenAI headers:", http.allHeaderFields)
             }
             if let body = String(data: data, encoding: .utf8) {
-                print("OpenAI RAW response:\n\(body)")
             }
             
             do {
                 let top = try JSONSerialization.jsonObject(with: data)
-                print("OpenAI JSON (top-level):", top)
                 if let json = top as? [String: Any],
                    let choices = json["choices"] as? [[String: Any]],
                    let firstChoice = choices.first,
@@ -410,26 +398,20 @@ final class TicketNumberOCR {
                     
                     // Check for refusal first
                     if let refusal = message["refusal"] as? String, !refusal.isEmpty {
-                        print("OpenAI refused to process: \(refusal)")
                         completion(.failure(NSError(domain: "OpenAI", code: -7, userInfo: [NSLocalizedDescriptionKey: "OpenAI refused to process the image: \(refusal)"])))
                         return
                     }
                     
                     if let content = message["content"] as? String {
-                        print("OpenAI message.content:\n\(content)")
                         // Parse the OpenAI response
                         self.parseOpenAIResponse(content: content, completion: completion)
                     } else {
-                        print("OpenAI JSON shape unexpected - no content")
                         completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
                     }
                 } else {
-                    print("OpenAI JSON shape unexpected")
                     completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
                 }
             } catch {
-                print("OpenAI JSON decode error:", error)
-                if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
                 completion(.failure(error))
             }
         }.resume()
@@ -457,11 +439,9 @@ final class TicketNumberOCR {
         let base64Image = imageData.base64EncodedString()
         
         // Log image size information
-        print("OpenAI Scanning - Original size: \(image.size), Resized: \(resizedImage.size), File size: \(imageData.count / 1024) KB")
         
         // Debug logging
         let key = APIKeys.openAIAPIKey
-        print("OpenAI key prefix:", key.prefix(7), "len:", key.count)
         precondition(!key.contains("YOUR_"), "APIKeys.swift still has placeholder")
         
         let requestBody: [String: Any] = [
@@ -537,11 +517,9 @@ final class TicketNumberOCR {
             return
         }
         
-        print("OpenAI Single-Request Scanning - Starting request...")
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("OpenAI Single-Request Scanning Error: \(error.localizedDescription)")
                 completion(.failure(error))
                 return
             }
@@ -559,27 +537,20 @@ final class TicketNumberOCR {
                     
                     // Check for refusal first
                     if let refusal = message["refusal"] as? String, !refusal.isEmpty {
-                        print("OpenAI refused to process: \(refusal)")
                         completion(.failure(NSError(domain: "OpenAI", code: -7, userInfo: [NSLocalizedDescriptionKey: "OpenAI refused to process the image: \(refusal)"])))
                         return
                     }
                     
                     if let content = message["content"] as? String {
-                        print("OpenAI Single-Request Response:\n\(content)")
                         // Parse the OpenAI response
                         self.parseOpenAIResponse(content: content, completion: completion)
                     } else {
-                        print("OpenAI JSON shape unexpected - no content")
                         completion(.failure(NSError(domain: "OpenAI", code: -4, userInfo: [NSLocalizedDescriptionKey: "Invalid response format"])))
                     }
                 } else {
-                    print("OpenAI JSON decode error")
-                    if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
                     completion(.failure(NSError(domain: "OpenAI", code: -5, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON structure"])))
                 }
             } catch {
-                print("OpenAI JSON decode error:", error)
-                if let body = String(data: data, encoding: .utf8) { print("OpenAI RAW fallback:\n\(body)") }
                 completion(.failure(NSError(domain: "OpenAI", code: -5, userInfo: [NSLocalizedDescriptionKey: "JSON decode error: \(error.localizedDescription)"])))
             }
         }.resume()
@@ -650,7 +621,6 @@ final class TicketNumberOCR {
                     ticketRows.append(ticketRow)
                 }
                 
-                print("OpenAI OCR Success - Found \(ticketRows.count) rows")
                 completion(.success(ticketRows))
         } catch {
             completion(.failure(error))
@@ -667,7 +637,6 @@ final class TicketNumberOCR {
         detectLotteryGrid(from: processedImage) { [weak self] result in
             switch result {
             case .success(let grid):
-                print("Grid Detection - Found \(grid.numberPositions.count) number positions")
                 
                 // Step 3: Scan each individual number with initial game type
                 self?.scanIndividualNumbers(grid: grid, gameType: gameType) { scanResult in
@@ -681,25 +650,21 @@ final class TicketNumberOCR {
                             // Step 4: Detect actual game type from scanned numbers and re-scan if needed
                             let detectedGameType = self?.detectGameTypeFromRows(rows) ?? gameType
                             if detectedGameType != gameType {
-                                print("Detected game type: \(detectedGameType), re-scanning with correct constraints")
                                 self?.scanIndividualNumbers(grid: grid, gameType: detectedGameType, completion: completion)
                             } else {
                                 completion(.success(rows))
                             }
                         } else {
-                            print("Local OCR failed to extract meaningful numbers, trying OpenAI...")
                             // Fallback to OpenAI Vision API
                             self?.scanWithOpenAI(image: image, completion: completion)
                         }
                     case .failure(let error):
-                        print("Local OCR failed: \(error.localizedDescription), trying OpenAI...")
                         // Fallback to OpenAI Vision API
                         self?.scanWithOpenAI(image: image, completion: completion)
                     }
                 }
                 
             case .failure(let error):
-                print("Grid Detection Error: \(error.localizedDescription), trying OpenAI...")
                 // Fallback to OpenAI Vision API
                 self?.scanWithOpenAI(image: image, completion: completion)
             }
@@ -760,7 +725,6 @@ final class TicketNumberOCR {
                 )
                 
                 numberRegions.append((text: text, bounds: imageBounds))
-                print("Found number region: '\(text)' at \(imageBounds)")
             }
         }
         
@@ -805,7 +769,6 @@ final class TicketNumberOCR {
             rows.append(currentRow)
         }
         
-        print("Grid Detection - Found \(rows.count) rows")
         
         // Create number positions
         var numberPositions: [NumberPosition] = []
@@ -827,7 +790,6 @@ final class TicketNumberOCR {
                     )
                     numberPositions.append(position)
                     
-                    print("Created position: Row \(rowIndex), Col \(colIndex), Special: \(isSpecial)")
                 }
             }
         }
@@ -867,10 +829,8 @@ final class TicketNumberOCR {
                 switch result {
                 case .success(let number):
                     results[position] = number
-                    print("Scanned number at Row \(position.row), Col \(position.column): \(number)")
                 case .failure(let error):
                     errors.append(error)
-                    print("Failed to scan number at Row \(position.row), Col \(position.column): \(error.localizedDescription)")
                 }
             }
         }
@@ -878,7 +838,6 @@ final class TicketNumberOCR {
         // Wait for all scans to complete
         dispatchGroup.notify(queue: .main) {
             if !errors.isEmpty {
-                print("Some number scans failed: \(errors.count) errors")
             }
             
             // Reconstruct lottery data
@@ -1167,7 +1126,6 @@ final class TicketNumberOCR {
             let ticketRow = TicketRow(numbers: paddedNumbers, special: specialNumber)
             ticketRows.append(ticketRow)
             
-            print("Reconstructed Row \(rowIndex): \(paddedNumbers) Special: \(specialNumber ?? 0)")
         }
         
         return ticketRows
@@ -1264,9 +1222,7 @@ final class TicketNumberOCR {
                            text.range(of: #"[0-9]"#, options: .regularExpression) != nil
                 }
             
-            print("OCR Debug - Found \(digitish.count) digit-like lines:")
             for line in digitish {
-                print("  '\(line.text)' at \(line.box)")
             }
             
             // group into rows by Y proximity with tighter tolerance
@@ -1292,11 +1248,9 @@ final class TicketNumberOCR {
                     return Int(corrected)
                 }
                 
-                print("OCR Debug - Processing row text: '\(merged)' -> tokens: \(tokens)")
                 
                 // More flexible row validation - allow rows with just numbers
                 guard tokens.count >= 1 else { 
-                    print("OCR Debug - Skipping row (no numbers): \(tokens)")
                     return nil 
                 }
                 
@@ -1313,7 +1267,6 @@ final class TicketNumberOCR {
                         (1...99).contains(num) ? num : 0
                 }
                 
-                    print("OCR Debug - Parsed full row: \(saneNormals) PB: \(saneSpecial ?? 0)")
                 return TicketRow(numbers: saneNormals, special: saneSpecial)
                 } else {
                     // Partial row - pad with zeros
@@ -1322,7 +1275,6 @@ final class TicketNumberOCR {
                         (1...70).contains(num) ? num : 0
                     }
                     
-                    print("OCR Debug - Parsed partial row: \(saneNormals)")
                     return TicketRow(numbers: saneNormals, special: nil)
                 }
             }
@@ -1428,7 +1380,6 @@ class QRScannerViewController: UIViewController {
         captureSession = AVCaptureSession()
         
         guard let videoCaptureDevice = AVCaptureDevice.default(for: .video) else { 
-            print("Failed to get video capture device")
             return 
         }
         let videoInput: AVCaptureDeviceInput
@@ -1436,14 +1387,12 @@ class QRScannerViewController: UIViewController {
         do {
             videoInput = try AVCaptureDeviceInput(device: videoCaptureDevice)
         } catch {
-            print("Failed to create video input: \(error)")
             return
         }
         
         if captureSession.canAddInput(videoInput) {
             captureSession.addInput(videoInput)
         } else {
-            print("Cannot add video input to capture session")
             return
         }
         
@@ -1460,7 +1409,6 @@ class QRScannerViewController: UIViewController {
                 metadataOutput.rectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
             }
         } else {
-            print("Cannot add metadata output to capture session")
             return
         }
         
@@ -1469,7 +1417,6 @@ class QRScannerViewController: UIViewController {
         if captureSession.canAddOutput(photoOutput) {
             captureSession.addOutput(photoOutput)
         } else {
-            print("Cannot add photo output to capture session")
         }
         
         previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
@@ -1684,7 +1631,6 @@ class QRScannerViewController: UIViewController {
         // Process the cropped image
         guard let croppedImage = previewImageView.image else { return }
         
-        print("Process Button - Using cropped image: \(croppedImage.size)")
         
         // Update capturedImage to the cropped image for results screen
         self.capturedImage = croppedImage
@@ -1746,7 +1692,6 @@ class QRScannerViewController: UIViewController {
                 if let messageString = qrFeature.messageString {
                     AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
                     captureSession.stopRunning()
-                        print("QR Detection - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
                         delegate?.didScanQRCode(messageString, image: self.capturedImage)
                         return true
                     }
@@ -1808,10 +1753,6 @@ class QRScannerViewController: UIViewController {
         let previewSize = previewLayer.bounds.size
         let scanningFrame = scanningArea.frame
         
-        print("Precise Green Box Crop:")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewSize)")
-        print("  Scanning frame: \(scanningFrame)")
         
         // Calculate the aspect ratio and video gravity
         let imageAspect = imageSize.width / imageSize.height
@@ -1865,16 +1806,13 @@ class QRScannerViewController: UIViewController {
             height: min(cropRect.height, imageSize.height)
         )
         
-        print("  Calculated crop rect: \(cropRect)")
         
         // Crop the image
         guard let cgImage = image.cgImage?.cropping(to: cropRect) else {
-            print("Failed to crop image")
             return image
         }
         
         let croppedImage = UIImage(cgImage: cgImage)
-        print("  Cropped image size: \(croppedImage.size)")
         
         return croppedImage
     }
@@ -1892,7 +1830,6 @@ class QRScannerViewController: UIViewController {
         let rectangleRequest = VNDetectRectanglesRequest { request, error in
             guard error == nil,
                   let observations = request.results as? [VNRectangleObservation] else {
-                print("Rectangle detection failed: \(error?.localizedDescription ?? "Unknown error")")
                     return
             }
             
@@ -1900,7 +1837,6 @@ class QRScannerViewController: UIViewController {
             let largestRectangle = observations.max { $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height }
             
             if let rectangle = largestRectangle {
-                print("Detected rectangle: \(rectangle.boundingBox)")
                 
                 // Convert normalized coordinates to image coordinates
                 let cropRect = CGRect(
@@ -1910,14 +1846,12 @@ class QRScannerViewController: UIViewController {
                     height: rectangle.boundingBox.height * imageSize.height
                 )
                 
-                print("Crop rect: \(cropRect)")
                 
                 // Crop the image to the detected rectangle
                 DispatchQueue.main.async {
                     self.cropImageToRect(image, rect: cropRect, scanningFrame: scanningFrame, previewSize: previewSize)
                 }
                 } else {
-                print("No rectangles detected, trying text detection")
                 // Fallback to text detection
                 self.detectTicketByText(image, scanningFrame: scanningFrame, previewSize: previewSize)
             }
@@ -1954,11 +1888,6 @@ class QRScannerViewController: UIViewController {
             height: min(clampedRect.height + (padding * 2), imageSize.height - max(0, clampedRect.origin.y - padding))
         )
         
-        print("Ticket Detection Crop:")
-        print("  Image size: \(imageSize)")
-        print("  Detected rect: \(rect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Crop the image
         guard let cgImage = image.cgImage?.cropping(to: paddedRect) else { return }
@@ -1975,7 +1904,6 @@ class QRScannerViewController: UIViewController {
         let request = VNRecognizeTextRequest { request, error in
             guard error == nil,
                   let observations = request.results as? [VNRecognizedTextObservation] else {
-                print("Text detection failed: \(error?.localizedDescription ?? "Unknown error")")
                         return
                     }
             
@@ -1986,7 +1914,6 @@ class QRScannerViewController: UIViewController {
                 if let candidate = observation.topCandidates(1).first,
                    candidate.string.uppercased().contains("LOTTERY") {
                     ticketBounds = observation.boundingBox
-                    print("Found LOTTERY text at: \(ticketBounds!)")
                     break
                 }
             }
@@ -2009,13 +1936,11 @@ class QRScannerViewController: UIViewController {
                     height: min(cropRect.height * 1.5, imageSize.height - max(0, cropRect.origin.y - cropRect.height * 0.2))
                 )
                 
-                print("Expanded ticket bounds: \(expandedRect)")
                 
                 DispatchQueue.main.async {
                     self.cropImageToRect(image, rect: expandedRect, scanningFrame: scanningFrame, previewSize: previewSize)
                 }
             } else {
-                print("No LOTTERY text found, using center crop")
                 DispatchQueue.main.async {
                     let imageSize = image.size
                     let centerRect = CGRect(
@@ -2055,11 +1980,6 @@ class QRScannerViewController: UIViewController {
             height: cropHeight
         )
         
-        print("Percentage Crop:")
-        print("  Image size: \(imageSize)")
-        print("  Crop percentage: \(cropPercentage)")
-        print("  Crop size: \(cropWidth) x \(cropHeight)")
-        print("  Crop rect: \(cropRect)")
         
         // Show visual feedback
         DispatchQueue.main.async {
@@ -2113,15 +2033,6 @@ class QRScannerViewController: UIViewController {
             height: min(clampedRect.height + (padding * 2), imageSize.height - max(0, clampedRect.origin.y - padding))
         )
         
-        print("Fixed Center Crop:")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewSize)")
-        print("  Scale: \(scale)")
-        print("  Crop width: \(cropWidth), height: \(cropHeight)")
-        print("  Image center: \(imageCenter)")
-        print("  Crop rect: \(cropRect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Show visual feedback
         DispatchQueue.main.async {
@@ -2166,14 +2077,6 @@ class QRScannerViewController: UIViewController {
             height: min(clampedRect.height + (padding * 2), imageSize.height - max(0, clampedRect.origin.y - padding))
         )
         
-        print("Preview Layer Conversion:")
-        print("  Scanning frame: \(scanningFrame)")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewSize)")
-        print("  Normalized rect: \(normalizedRect)")
-        print("  Crop rect: \(cropRect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Show visual feedback
         DispatchQueue.main.async {
@@ -2255,16 +2158,6 @@ class QRScannerViewController: UIViewController {
             height: min(clampedRect.height + (padding * 2), imageSize.height - max(0, clampedRect.origin.y - padding))
         )
         
-        print("Simple Cropping:")
-        print("  Scanning frame: \(scanningFrame)")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewSize)")
-        print("  Video gravity: \(videoGravity)")
-        print("  Image aspect ratio: \(imageSize.width / imageSize.height)")
-        print("  Preview aspect ratio: \(previewSize.width / previewSize.height)")
-        print("  Crop rect: \(cropRect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Show visual feedback
         DispatchQueue.main.async {
@@ -2314,14 +2207,6 @@ class QRScannerViewController: UIViewController {
             height: min(clampedRect.height + (padding * 2), imageSize.height - max(0, clampedRect.origin.y - padding))
         )
         
-        print("Alternative Cropping:")
-        print("  Scanning frame: \(scanningFrame)")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewSize)")
-        print("  Normalized rect: \(normalizedRect)")
-        print("  Crop rect: \(cropRect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Show visual feedback
         DispatchQueue.main.async {
@@ -2388,17 +2273,6 @@ class QRScannerViewController: UIViewController {
         )
         
         // Debug: Print cropping information
-        print("Advanced Cropping:")
-        print("  Scanning frame: \(scanningFrame)")
-        print("  Image size: \(imageSize)")
-        print("  Preview size: \(previewLayerSize)")
-        print("  Image aspect ratio: \(imageAspectRatio)")
-        print("  Preview aspect ratio: \(previewAspectRatio)")
-        print("  Scale X: \(scaleX), Scale Y: \(scaleY)")
-        print("  Offset X: \(offsetX), Offset Y: \(offsetY)")
-        print("  Crop rect: \(cropRect)")
-        print("  Clamped rect: \(clampedRect)")
-        print("  Padded rect: \(paddedRect)")
         
         // Show visual feedback of what will be cropped
         DispatchQueue.main.async {
@@ -2601,11 +2475,9 @@ class QRScannerViewController: UIViewController {
                 progressAlert.dismiss(animated: true) {
                 switch result {
                 case .success(let rows):
-                        print("OpenAI OCR Success - Found \(rows.count) rows:")
                     for (index, row) in rows.enumerated() {
                             let regularStr = row.numbers.map { $0 == -1 ? "ISSUE" : String($0) }.joined(separator: ", ")
                             let powerballStr = (row.special ?? -1) == -1 ? "ISSUE" : String(row.special!)
-                        print("  Row \(index): [\(regularStr)] PB: \(powerballStr)")
                     }
                         
                         // Count issues (-1 values)
@@ -2616,20 +2488,16 @@ class QRScannerViewController: UIViewController {
                     
                     // Convert to lottery data format
                     let lotteryData = self.convertTicketRowsToLotteryData(rows)
-                        print("OpenAI OCR Processing - Generated lottery data: '\(lotteryData)'")
                     
                     if !lotteryData.isEmpty {
                         AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
                         self.captureSession.stopRunning()
-                            print("OpenAI OCR Processing - Passing image to delegate: \(self.capturedImage?.size ?? CGSize.zero)")
                         self.delegate?.didScanQRCode(lotteryData, image: self.capturedImage)
                     } else {
-                        print("No valid lottery data found")
                         self.showNoDataFoundAlert()
                     }
                     
                 case .failure(let error):
-                        print("OpenAI OCR Error: \(error.localizedDescription)")
                     
                     // Check if it's a network connectivity error
                     if let nsError = error as NSError?, nsError.code == -1000 {
@@ -2646,9 +2514,7 @@ class QRScannerViewController: UIViewController {
     private func convertTicketRowsToLotteryData(_ rows: [TicketRow]) -> String {
         var allRows: [String] = []
         
-        print("ConvertTicketRows - Input rows count: \(rows.count)")
         for (index, row) in rows.enumerated() {
-            print("  Input row \(index): \(row.numbers) PB: \(row.special ?? 0)")
         }
         
         // Filter out completely empty rows (all 0s)
@@ -2658,7 +2524,6 @@ class QRScannerViewController: UIViewController {
             return hasValidNumbers || hasValidSpecial
         }
         
-        print("ConvertTicketRows - Valid rows count: \(validRows.count)")
         
         // Process all valid rows - no hardcoded limit
         for (i, row) in validRows.enumerated() {
@@ -2671,11 +2536,9 @@ class QRScannerViewController: UIViewController {
                 let powerballStr = String(powerball)
                 let rowData = "\(regularNumbersStr) \(powerballStr)"
                 allRows.append(rowData)
-                print("  Converted row \(i): '\(rowData)'")
         }
         
         let result = "Lottery: \(allRows.joined(separator: "|")) Ticket:OCR"
-        print("ConvertTicketRows - Final result: '\(result)'")
         return result
     }
     
@@ -2944,9 +2807,7 @@ extension QRScannerViewController: AVCapturePhotoCaptureDelegate {
               let image = UIImage(data: imageData) else { return }
         
         // Fix image orientation
-        print("Original image orientation: \(image.imageOrientation.rawValue)")
         let correctedImage = fixImageOrientation(image)
-        print("Corrected image orientation: \(correctedImage.imageOrientation.rawValue)")
         
         // Store the corrected image
         self.capturedImage = correctedImage
@@ -2954,7 +2815,6 @@ extension QRScannerViewController: AVCapturePhotoCaptureDelegate {
         if enableCropping {
             // Crop image to scanning area and show preview
             let croppedImage = cropImageToScanningArea(correctedImage)
-            print("Photo Capture - Cropped image size: \(croppedImage.size)")
             // Store the cropped image for use in results screen and OCR
             self.capturedImage = croppedImage
             showCroppedImagePreview(croppedImage)
@@ -3341,12 +3201,10 @@ class ViewController: UIViewController {
     private func updateScanButtonVisibility() {
         let hasValidSelection = selectedGame != nil
         
-        print("DEBUG: updateScanButtonVisibility - Game: \(selectedGame?.name ?? "nil")")
-        print("DEBUG: hasValidSelection: \(hasValidSelection), scanButton.isHidden: \(scanButton.isHidden)")
         
         if hasValidSelection {
             let gameName = selectedGame?.name ?? ""
-            scanButton.setTitle("🎯 Scan \(gameName)", for: .normal)
+            scanButton.setTitle(" Scan \(gameName)", for: .normal)
             
             // Animate button appearance
             UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.5, options: [.curveEaseInOut], animations: {
@@ -3589,10 +3447,7 @@ class QRScanResultViewController: UIViewController {
         // Set the scanned image if available
         if let image = scannedImage {
             scannedImageView.image = image
-            print("Results Screen - Displaying scanned image: \(image.size)")
-            print("Results Screen - Image orientation: \(image.imageOrientation.rawValue)")
         } else {
-            print("Results Screen - No scanned image provided")
         }
     }
     
@@ -3661,8 +3516,6 @@ class QRScanResultViewController: UIViewController {
     }
     
     private func displayResult() {
-        print("Results Screen - isLotteryTicket: \(isLotteryTicket)")
-        print("Results Screen - scannedCode: '\(scannedCode)'")
         
         if isLotteryTicket {
             titleLabel.text = "Lottery Scan Results"
@@ -3670,7 +3523,6 @@ class QRScanResultViewController: UIViewController {
             
             // Parse lottery numbers
             parseLotteryNumbers()
-            print("Results Screen - After parsing: lotteryNumbers.count = \(lotteryNumbers.count)")
             setupNumbersGrid()
             
         // Show persistent toast if there are issues
@@ -3694,25 +3546,18 @@ class QRScanResultViewController: UIViewController {
         lotteryNumbers = []
         powerballNumbers = []
         
-        print("Results Screen - Parsing lottery numbers from: \(scannedCode)")
-        print("Results Screen - scannedCode length: \(scannedCode.count)")
-        print("Results Screen - Contains '|': \(scannedCode.contains("|"))")
         
         // Parse the scanned code to extract lottery numbers
         if scannedCode.contains("Lottery:") {
             let components = scannedCode.components(separatedBy: "Lottery: ")
             if components.count > 1 {
                 let lotteryData = components[1].components(separatedBy: " Ticket:")[0]
-                print("Results Screen - lotteryData: '\(lotteryData)'")
-                print("Results Screen - lotteryData contains '|': \(lotteryData.contains("|"))")
                 
                 // Check if it's multi-row data (separated by |)
                 if lotteryData.contains("|") {
                     let rows = lotteryData.components(separatedBy: "|")
-                    print("Results Screen - Multi-row detected: \(rows.count) rows")
                     for (rowIndex, row) in rows.enumerated() {
                         let numbers = row.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: " ")
-                        print("Results Screen - Processing row \(rowIndex): '\(row)' -> numbers: \(numbers)")
                         
                         // Always process the row, even if some numbers are missing
                         var regularNumbers: [Int] = []
@@ -3734,7 +3579,6 @@ class QRScanResultViewController: UIViewController {
                         lotteryNumbers.append(regularNumbers)
                         powerballNumbers.append(powerball)
                         
-                        print("Results Screen - Added row \(rowIndex): \(regularNumbers) PB: \(powerball)")
                     }
                 } else {
                     // Single row format - try both comma and space separated
@@ -3747,7 +3591,6 @@ class QRScanResultViewController: UIViewController {
                         numbers = lotteryData.components(separatedBy: " ")
                     }
                     
-                    print("Results Screen - Single row numbers: \(numbers)")
                     
                     if numbers.count >= 6 {
                         var regularNumbers: [Int] = []
@@ -3759,7 +3602,6 @@ class QRScanResultViewController: UIViewController {
                         if let powerball = Int(numbers[5].replacingOccurrences(of: " PB:", with: "")) {
                             lotteryNumbers.append(regularNumbers)
                             powerballNumbers.append(powerball)
-                            print("Results Screen - Added single row: \(regularNumbers) PB: \(powerball)")
                         }
                     }
                 }
@@ -3769,19 +3611,14 @@ class QRScanResultViewController: UIViewController {
         // Only show rows that were actually scanned - no padding to 5 rows
         // The UI will dynamically adjust to show only the scanned rows
         
-        print("Results Screen - Parsed lottery numbers:")
         for (index, row) in lotteryNumbers.enumerated() {
-            print("  Row \(index): \(row) PB: \(powerballNumbers[index])")
         }
     }
     
     private func setupNumbersGrid() {
-        print("Results Screen - setupNumbersGrid: lotteryNumbers.count = \(lotteryNumbers.count)")
-        print("Results Screen - setupNumbersGrid: powerballNumbers.count = \(powerballNumbers.count)")
         
         // Safety check
         guard numbersStackView.superview != nil else {
-            print("Results Screen - ERROR: numbersStackView not in view hierarchy")
             return
         }
         
@@ -3793,7 +3630,6 @@ class QRScanResultViewController: UIViewController {
         // Only create rows for the actual scanned data
         for (index, row) in lotteryNumbers.enumerated() {
             let rowLabel = index < rowLabels.count ? rowLabels[index] : "Row \(index + 1)"
-            print("Results Screen - Creating row \(index): \(rowLabel) with numbers: \(row) PB: \(powerballNumbers[index])")
             
             // Safety check for powerball array bounds
             let powerball = index < powerballNumbers.count ? powerballNumbers[index] : 0
@@ -3805,13 +3641,10 @@ class QRScanResultViewController: UIViewController {
                     powerball: powerball
             )
             numbersStackView.addArrangedSubview(rowView)
-                print("Results Screen - Successfully added row \(index) to UI")
             } catch {
-                print("Results Screen - ERROR creating row \(index): \(error)")
         }
         }
         
-        print("Results Screen - setupNumbersGrid: Added \(lotteryNumbers.count) rows to UI")
     }
     
     private func createNumberRowView(label: String, numbers: [Int], powerball: Int) -> UIView {
@@ -4071,13 +3904,6 @@ class QRScanResultViewController: UIViewController {
         }
         
         // Print the final API URL for debugging
-        print("🎯 MAGAYO API CALL:")
-        print("   Game: \(selectedGame.name)")
-        print("   Game Code: \(gameCode)")
-        print("   Draw Date: \(dateString)")
-        print("   URL: \(url.absoluteString)")
-        print("   API Key: \(apiKey.prefix(8))...")
-        print("   Full API Request: GET \(url.absoluteString)")
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -4085,42 +3911,32 @@ class QRScanResultViewController: UIViewController {
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("❌ MAGAYO API Network Error: \(error.localizedDescription)")
                 completion(.failure(LotteryAPIError(message: "Network error: \(error.localizedDescription)", code: nil)))
                 return
             }
             
             guard let data = data else {
-                print("❌ MAGAYO API: No data received")
                 completion(.failure(LotteryAPIError(message: "No data received", code: nil)))
                 return
             }
             
             // Print raw response for debugging
             if let responseString = String(data: data, encoding: .utf8) {
-                print("📥 MAGAYO API Raw Response:")
-                print(responseString)
             }
             
             do {
                 let lotteryResult = try JSONDecoder().decode(LotteryResult.self, from: data)
                 
-                print("✅ MAGAYO API Response Parsed Successfully:")
-                print("   Error Code: \(lotteryResult.error ?? 0)")
-                print("   Draw Date: \(lotteryResult.draw ?? "N/A")")
-                print("   Results: \(lotteryResult.results ?? "N/A")")
                 
                 // Check if there's an API error according to magayo documentation
                 if let errorCode = lotteryResult.error, errorCode != 0 {
                     let errorMessage = self.getErrorMessage(for: errorCode)
-                    print("❌ MAGAYO API Error \(errorCode): \(errorMessage)")
                     completion(.failure(LotteryAPIError(message: errorMessage, code: errorCode)))
                     return
                 }
                 
                 completion(.success(lotteryResult))
             } catch {
-                print("❌ MAGAYO API JSON Parse Error: \(error.localizedDescription)")
                 completion(.failure(LotteryAPIError(message: "Failed to parse response: \(error.localizedDescription)", code: nil)))
             }
         }.resume()
@@ -4230,7 +4046,7 @@ class QRScanResultViewController: UIViewController {
             // Check for matches with user's numbers
             let matches = checkForMatches(winningNumbers: winningNumbers)
             if matches.count > 0 {
-                message += "🎉 You have \(matches.count) matching number(s): \(matches.joined(separator: ", "))\n\n"
+                message += " You have \(matches.count) matching number(s): \(matches.joined(separator: ", "))\n\n"
             } else {
                 message += "No matching numbers found.\n\n"
             }
@@ -4703,12 +4519,7 @@ extension ViewController: QRScannerDelegate {
             let resizedSize = resizedImage.size
             let resizedFileSize = resizedImage.fileSizeKB()
             
-            print("📸 Image Resizing Info:")
-            print("   Original: \(Int(originalSize.width))x\(Int(originalSize.height)) (\(originalFileSize) KB)")
-            print("   Resized:  \(Int(resizedSize.width))x\(Int(resizedSize.height)) (\(resizedFileSize) KB)")
-            print("   Reduction: \(String(format: "%.1f", (1.0 - Double(resizedFileSize) / Double(originalFileSize)) * 100))%")
         } else {
-            print("📸 Image Resizing: Failed to resize image")
         }
     }
     
@@ -4726,7 +4537,6 @@ extension ViewController {
     
     @objc private func datePickerChanged() {
         selectedDrawDate = datePicker.date
-        print("📅 Selected draw date: \(formatDateForAPI(selectedDrawDate!))")
     }
     
     

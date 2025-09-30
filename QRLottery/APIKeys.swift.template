@@ -2,6 +2,13 @@
 //  APIKeys.swift.template
 //  QRLottery
 //
+//  Created by Shahin Noor on 22/9/25.
+//
+
+//
+//  APIKeys.swift.template
+//  QRLottery
+//
 //  Template file for API keys configuration.
 //  Copy this file to APIKeys.swift and replace the placeholder values with your actual API keys.
 //
@@ -14,11 +21,11 @@ import Foundation
 struct APIKeys {
     // OpenAI API Key for Vision API
     // Get your key from: https://platform.openai.com/api-keys
-    static let openAIAPIKey = "YOUR_OPENAI_API_KEY_HERE"
+    static let openAIAPIKey = "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	"
     
     // Magayo.com API Key for lottery results
     // Get your key from: https://www.magayo.com/api/
-    static let magayoAPIKey = "YOUR_MAGAYO_API_KEY_HERE"
+    static let magayoAPIKey = "4hUkNYPhj4"
     
     // OpenAI API Base URL
     static let openAIBaseURL = "https://api.openai.com/v1/chat/completions"

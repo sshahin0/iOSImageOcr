@@ -1,3 +1,10 @@
+//
+//  SceneDelegate.swift
+//  QRLottery
+//
+//  Created by Shahin Noor on 22/9/25.
+//
+
 import UIKit
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
